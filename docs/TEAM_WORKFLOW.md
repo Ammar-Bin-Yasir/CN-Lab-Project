@@ -32,7 +32,7 @@ scripts/               launch/package scripts; coordinated
 tests/                each owner tests their behavior
 docs/                  shared plan, contracts, report/test notes
 AGENTS.md              shared AI rules
-README.md              verified install/run instructions
+readme.md              verified install/run instructions
 requirements.txt       agreed, tested dependencies
 .gitignore             excludes runtime and private data
 ```
@@ -60,3 +60,7 @@ Do not force-push shared branches, rewrite teammates' work, or change another ow
 Rotate reviewers: 1 reviews 4, 4 reviews 3, 3 reviews 2, 2 reviews 1; request additional help when a reviewer cannot assess a change. Reviewers should run or observe the relevant flow and ask the author to explain it. Keep main runnable; revert a broken feature only through an agreed corrective change.
 
 On October 21 freeze new features. Use one recorded commit for the final demonstration and submission. Everyone rehearses their module and the overall flow. Member 1 coordinates release; Member 2 verifies user instructions; Member 3 verifies data/privacy tests; Member 4 verifies media and backup recording. Ammar reports no explicit prohibition on AI, provided members understand and can explain the project. Use the shared understanding checks; follow any later teacher instructions. The report submission format is PDF.
+
+## Current starting point — October 16
+
+See [TEAM_START.md](TEAM_START.md) for unassigned ownership, concrete first tasks and integration gates. The desktop preview now exists. Network/server/media folders contain starter guides only. Launch explicitly with `python run.py --demo`. The existing UI lives in client/ui/; temporary local data lives in client/demo/.
