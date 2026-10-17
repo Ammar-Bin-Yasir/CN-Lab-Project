@@ -1,6 +1,8 @@
+> Ownership update — October 17: Ammar owns UI/integration/storage/discovery/live media; Abdullah owns connections/presence; Ashna owns text/groups; Ayesha owns files. TEAM_START.md and TEAM_WORKFLOW.md supersede older role references below. Screenshots/test tools/evidence are kept locally, not distributed in this minimal repository. Product requirements remain unchanged.
+
 # Chatters Final Team Project Reference
 
-Version 1.1 — October 15, 2026. Submission: October 22, 2026 (Asia/Karachi). This is the agreed implementation baseline, not a claim of completed work. Team: Ammar, Abdullah, Ashna, and Ayesha. All four roles remain unassigned; role numbers are work packages, not assignments to people. Repository: https://github.com/Ammar-Bin-Yasir/CN-Lab-Project. The teacher's original brief controls course requirements; our supporting choices are identified separately.
+Version 1.1 — October 15, 2026. Submission: October 22, 2026 (Asia/Karachi). This is the agreed implementation baseline, not a claim of completed work. Team: Ammar, Abdullah, Ashna, and Ayesha. Current named assignments are in TEAM_START.md. Repository: https://github.com/Ammar-Bin-Yasir/CN-Lab-Project. The teacher's original brief controls course requirements; our supporting choices are identified separately.
 
 ## Product and success target
 
@@ -169,4 +171,4 @@ Write docs and collect screenshots daily. If late, drop decorative work and sing
 
 ## Team coordination and decisions still needed
 
-See TEAM_WORKFLOW.md for ownership and GitHub practices, members/ for personal guides, AGENTS.md for AI instructions, and CHECKLIST.md for unresolved decisions and release gates. Once copied into GitHub, this document is the source of truth; older discussion drafts are superseded. Any change to scope, protocol, schema, dependencies, or module boundaries requires team coordination and an updated document.
+See TEAM_WORKFLOW.md for ownership and GitHub practices, TEAM_START.md for individual tasks, AGENTS.md for AI instructions, and CHECKLIST.md for unresolved decisions and release gates. Once copied into GitHub, this document is the source of truth; older discussion drafts are superseded. Any change to scope, protocol, schema, dependencies, or module boundaries requires team coordination and an updated document.

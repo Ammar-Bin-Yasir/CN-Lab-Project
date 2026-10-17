@@ -14,3 +14,10 @@ recordings/
 downloads/
 dist/
 build/
+
+# Local verification and review artifacts
+screenshots/
+tests/
+pytest.ini
+requirements-dev.txt
+local-notes/

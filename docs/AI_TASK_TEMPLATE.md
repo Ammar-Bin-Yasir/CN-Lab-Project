@@ -3,7 +3,7 @@
 Copy the following into your coding assistant and fill the brackets. Ensure the assistant can read the repository files; attach the instructions if it cannot.
 
 ---
-You are assisting our Computer Networks university project. Read AGENTS.md, docs/FINAL_PLAN.md, docs/INTEGRATION_CONTRACT.md, docs/TEAM_WORKFLOW.md, and docs/members/[my guide]. Follow the agreed stack, scope, and interfaces.
+You are assisting our Computer Networks university project. Read AGENTS.md, docs/FINAL_PLAN.md, docs/INTEGRATION_CONTRACT.md, docs/TEAM_WORKFLOW.md, and my section in docs/TEAM_START.md. Follow the agreed stack, scope, and interfaces.
 
 My role: [member/role].
 My task: [one concrete behavior].
