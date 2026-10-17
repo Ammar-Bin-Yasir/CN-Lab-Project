@@ -2,7 +2,10 @@
 import argparse
 
 def main():
+    
     parser = argparse.ArgumentParser(description="Chatters desktop application")
+    
+    
     parser.add_argument("--demo", action="store_true", help="Run the local desktop preview; no networking")
     args = parser.parse_args()
     if not args.demo:
