@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
     QDialog, QCheckBox, QMessageBox, QInputDialog, QFileDialog)
 from client.demo import DemoService, PEOPLE
 
-
+# helper to create a QLabel with a style and optional word wrap
 def label(text, style='', wrap=False):
     item = QLabel(text)
     item.setTextFormat(Qt.PlainText)
@@ -15,7 +15,7 @@ def label(text, style='', wrap=False):
     item.setWordWrap(wrap)
     return item
 
-
+# helper to create a QPushButton with a style, click action, and optional tooltip
 def button(text, action, style='', tip=''):
     item = QPushButton(text)
     item.setObjectName(style)
@@ -24,7 +24,7 @@ def button(text, action, style='', tip=''):
     item.setToolTip(tip or text)
     return item
 
-
+# helper to clear a layout and delete its widgets and sub-layouts
 def clear(layout):
     while layout.count():
         item = layout.takeAt(0)
@@ -35,7 +35,7 @@ def clear(layout):
             clear(item.layout())
             item.layout().deleteLater()
 
-
+# Additional functionality for the text composer to emit a signal when the user presses Enter without Shift.
 class Composer(QTextEdit):
     submitted = Signal()
 
@@ -45,19 +45,25 @@ class Composer(QTextEdit):
         else:
             super().keyPressEvent(event)
 
-
+# Window is the object that manages what the user sees and how the interface reacts
 class Window(QMainWindow):
     def __init__(self, service):
         super().__init__()
+        
+        # service is the object that manages each clients personal data and requests. 
         self.service = service
         self.target = None
         self.drafts = {}
+        
         self.setWindowTitle('Chatters · Desktop preview')
         self.resize(1180, 780)
         self.setMinimumSize(900, 620)
         self.setStyleSheet(Path(__file__).with_name('theme.qss').read_text())
+
+        # builds the fist screen after configs above.
         self.login_screen()
 
+    # builds the login screen
     def login_screen(self):
         root = QWidget()
         outer = QHBoxLayout(root)
@@ -100,6 +106,7 @@ class Window(QMainWindow):
     def enter_preview(self):
         self.service.preview(); self.shell()
 
+    # Creates the rail, sidebar and main panel
     def shell(self):
         root = QWidget(); row = QHBoxLayout(root); row.setSpacing(0); row.setContentsMargins(0, 0, 0, 0)
         rail = QWidget(); rail.setObjectName('rail'); rail.setFixedWidth(78)
@@ -159,6 +166,7 @@ class Window(QMainWindow):
     def preview_banner(self):
         self.main.addWidget(label('LOCAL PREVIEW  /  Sample contacts. Nothing is sent over the network.', 'muted', True))
 
+    # displays the home screen with a list of people to chat with
     def show_home(self):
         self.stash_draft(); self.navigation(); clear(self.main); self.preview_banner()
         self.main.addWidget(label('Your people, right here.', 'title'))
@@ -176,6 +184,7 @@ class Window(QMainWindow):
         self.main.addWidget(label('Make room for a conversation', 'brand'))
         self.main.addWidget(label('No groups yet? Use + on the left to create your first one.\nGroups you join will stay in your navigation rail.', 'muted', True))
 
+    # displays the chat screen for a given target, which can be a person or a group
     def show_chat(self, target):
         self.stash_draft(); self.target = target
         group = next((g for g in self.service.groups(True) if target == f"group:{g['id']}"), None)
@@ -200,6 +209,7 @@ class Window(QMainWindow):
         self.main.addWidget(label('Enter to save locally · Shift + Enter for a new line · Voice recording pending media integration', 'muted', True))
         self.composer.setFocus()
 
+    # builds visible message rows.
     def render_messages(self):
         clear(self.message_layout)
         rows = self.service.history(self.target)
@@ -216,6 +226,7 @@ class Window(QMainWindow):
         self.message_layout.addStretch()
         QTimer.singleShot(0, lambda: self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().maximum()))
 
+    # User presses Send or Enter.
     def send(self):
         try: self.service.send(self.target, self.composer.toPlainText())
         except ValueError as error:
@@ -233,6 +244,7 @@ class Window(QMainWindow):
             QMessageBox.information(self, 'Attachment preview', f'{Path(path).name}\n{size / 1024:.1f} KiB\n\nFile selection works. Upload and delivery await the networking implementation. No file has been sent or copied.')
         except (OSError, ValueError) as error: self.feedback.setText(str(error))
 
+    # User chooses to create a group
     def create_group(self):
         dialog = QDialog(self); dialog.setWindowTitle('Create a group'); dialog.setMinimumWidth(400)
         layout = QVBoxLayout(dialog); layout.setSpacing(16)
@@ -249,6 +261,7 @@ class Window(QMainWindow):
             dialog.accept(); self.show_chat(f'group:{gid}')
         layout.addWidget(button('Create group', create, 'primary')); layout.addWidget(button('Cancel', dialog.reject)); dialog.exec()
 
+    # User wants to find and join groups
     def browse_groups(self):
         dialog = QDialog(self); dialog.setWindowTitle('Browse local groups'); dialog.resize(450, 400)
         layout = QVBoxLayout(dialog); layout.addWidget(label('Find your group', 'title'))
@@ -268,6 +281,7 @@ class Window(QMainWindow):
             groups_layout.addWidget(button(g['name'] + (' · Protected' if g['protected'] else ' · Public') + (' · Joined' if g['joined'] else ''), join))
         groups_layout.addStretch(); layout.addWidget(button('Close', dialog.reject)); dialog.exec()
 
+    # User confirms leaving
     def leave_group(self, group):
         result = QMessageBox.question(self, 'Leave group?', 'The group and its messages will remain. You will need to join again to see them.')
         if result == QMessageBox.Yes:
@@ -275,12 +289,28 @@ class Window(QMainWindow):
 
 
 def main():
-    app = QApplication(sys.argv); app.setApplicationName('ChattersPreview'); app.setOrganizationName('Chatters')
-    path = Path(QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation)) / 'preview.sqlite'
+    # QApplication manages the desktop application: mouse clicks, keyboard input,
+    # window events, and other Qt behaviour. A Qt Widgets application needs one of these objects.
+    app = QApplication(sys.argv)
+    app.setApplicationName('ChattersPreview')
+    app.setOrganizationName('Chatters')
+
+    # The database is stored in the standard local application data folder for the OS.
+    path = Path(
+        QStandardPaths.writableLocation(
+            QStandardPaths.AppLocalDataLocation
+        )
+    ) / 'preview.sqlite'
+
     service = DemoService(path)
-    window = Window(service); window.show()
-    try: return app.exec()
-    finally: service.close()
+
+    window = Window(service)
+    window.show()
+
+    try:
+        return app.exec()
+    finally:
+        service.close()
 
 
 if __name__ == '__main__':

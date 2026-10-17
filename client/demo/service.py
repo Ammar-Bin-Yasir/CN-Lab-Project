@@ -12,10 +12,10 @@ from pathlib import Path
 
 PEOPLE = {'abdullah': 'Abdullah', 'ashna': 'Ashna', 'ayesha': 'Ayesha'}
 
-
+# gets the password hash to store in database.
 def digest(password, salt):
     return hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), n=16384, r=8, p=1).hex()
-
+    
 
 class DemoService:
     def __init__(self, path):
