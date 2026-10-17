@@ -1,72 +1,60 @@
-# Team start — October 16
+# Team tasks and kickoff call
 
-This is the starting map for the actual Chatters project. The desktop interface is reusable product work; its local data provider is temporary. There is no separate second application to rebuild from scratch.
+Assignments confirmed October 17, 2026. These replace the previous four-package ownership split. Names were assigned without assuming differences in skill.
 
-## Roles — confirm October 17
+## Current status
 
-Team: Ammar, Abdullah, Ashna, Ayesha. Names intentionally remain unassigned.
+Working: local desktop UI, preview profiles, private/group history and navigation. Temporary: client/demo/ and --demo. Pending: actual server, socket client adapter, authentication/storage integration, discovery, transfers and live calls. Empty networking/server directories are not implementations and may not appear in Git until code is added.
 
-| Package | Owner | Reviewer | Starting guide |
-|---|---|---|---|
-| 1 · Networking/integration | Unassigned | Unassigned | [Networking](members/01_networking_integration.md) |
-| 2 · Desktop UI | Unassigned | Unassigned | [UI](members/02_desktop_ui.md) |
-| 3 · Data/groups/files | Unassigned | Unassigned | [Data](members/03_data_groups_files.md) |
-| 4 · Audio/video | Unassigned | Unassigned | [Media](members/04_audio_video.md) |
+## Ammar — application and integration
 
-Fill this table together. Ownership means responsibility for coordination, tests and explanation; everyone may ask for help. Confirm target OS, collaborator access and working audio/video devices at the same time.
+Own client/ui/, client/network/, shared/, server/storage/, accounts/authentication, UDP discovery and live audio/video. Define the minimal shared framing/messages with the team first. Supply a terminal client harness and authenticated-session/storage boundaries; integrate their results into the GUI through queued Qt signals. All required media features remain in scope. Start microphone/camera feasibility immediately; avoid spending the remaining days on cosmetic polish.
 
-## Everyone's first 30 minutes
+## Abdullah — connections and presence
 
-1. Clone the repository and follow the root README. Until the foundation is merged, check out feature/desktop-preview to inspect it. Do not all commit onto that shared branch.
-2. Run `python run.py --demo`. Create a protected group, leave it, fail a password attempt and rejoin. Restart and inspect saved history.
-3. Run `python -m pytest -q`. Record any setup failure, OS and Python version.
-4. Read AGENTS.md, FINAL_PLAN.md, INTEGRATION_CONTRACT.md and your assigned guide.
-5. Create one small task with the issue template. Fill owner, paths, dependency and success/failure checks before coding.
+Branch: feature/connections. Work: server/transport/; coordinate shared helpers with Ammar.
 
-Use synthetic data. Local preview accounts/groups are not eventual server accounts/groups; there is no promised migration.
+First: start a TCP listener on a configurable address/port, accept two terminal clients, give each a worker, maintain a synchronized connection registry, and remove disconnected clients. Return/announce the active authenticated app users once Ammar supplies authentication. Agree serialized writes and bounded framing before routing messages.
 
-## First tasks and boundaries
+Checks: two clients stay connected simultaneously; closing one removes it while the other remains usable; a broken/incomplete frame does not crash the server. Distinguish clean close from a connection failure that takes time to detect.
 
-### Package 1 — prove framed transport
+Deliver: run instructions, a working demonstration and explanation of bind/listen/accept, per-client sockets, threads, locks and cleanup. Do not build a separate UI, account system or message protocol.
 
-Work in `shared/`, `server/transport/`, `client/network/`, and `tests/network/`.
+## Ashna — private and group text
 
-First agree and document the text-only envelope, size cap, response/error fields and IDs in INTEGRATION_CONTRACT.md. Then implement length-prefixed send/read helpers and a two-client transport harness. This is a transport experiment, not a shortcut around production authentication. Test fragmented headers/bodies, multiple frames in one stream, oversize frames and disconnect mid-frame. Keep GUI changes coordinated with package 2.
+Branch: feature/messaging. Work: server/services/messaging.py and server/services/groups.py (create them); coordinate transport with Abdullah and persistence with Ammar.
 
-Deliver: runnable two-client harness, tests, exact request/response examples, and instructions. No media dependency is needed.
+First: write routing functions using a small in-memory registry/harness, then attach them to the shared server. Route a private message only to its recipient; route group messages only to current members. Implement create/join/leave behaviour using Ammar's identity/storage service. Public/protected groups and persistent memberships remain required; do not invent a second database.
 
-### Package 2 — understand and prepare the existing UI
+Checks: a third client cannot receive/read private text; nonmembers cannot send/read group text; an offline direct recipient produces an error. A success acknowledgement follows persistence, not merely socket send. Temporary in-memory experiments are not the final persistent feature.
 
-Work in `client/ui/`, synthetic `screenshots/`, and `tests/ui/`.
+Deliver: private and group terminal demonstrations, exact operations/events, successful and denied cases. Explain recipient lookup, group broadcast, membership and authenticated sender identity.
 
-Start by tracing Send from button to local adapter and back to rendering. Add a focused regression test for drafts across private/group switching. With package 1, define the adapter's pending/result/error events, then implement connection status and pending/failed send states. Keep these states driven by real adapter events once available. Do not add more Discord features or alter the socket protocol alone.
+## Ayesha — file transfer
 
-Deliver: tested UI change, before/after screenshot, and agreed adapter handoff. Existing `client/app.py` is a compatibility import, not the place for new screens.
+Branch: feature/file-transfer. Work: client/network/files.py and server/services/files.py; agree any transport changes with Abdullah and Ammar.
 
-### Package 3 — establish server identity and storage
+First: transfer a small synthetic text file with a separate TCP harness, declared size, bounded chunks and SHA-256 comparison. Then integrate client → server → authorized recipient/group through the agreed session-bound file channel. Do not send whole files as JSON/base64 or trust arbitrary destination paths.
 
-Work in `server/storage/`, `server/services/`, and `tests/storage/`.
+Checks: reject files above 20 MiB; handle zero-byte files; interrupt halfway without publishing a corrupt complete file; reject checksum mismatch and unauthorized transfers. Write temporary files, verify before final rename, sanitize names, and close resources. File I/O/network work must stay off the GUI thread.
 
-First design and document users, groups, memberships and messages with stable IDs and constraints. Implement the database worker/connection ownership, parameterized operations, unique username normalization and salted password verification. Use temporary databases in tests. Do not copy the demo schema as the production schema: private/group authorization and server identity need real ownership checks.
+Deliver: sender/receiver instructions, verified file and interrupted-transfer demonstration. Explain byte streams, chunks, size accounting and why TCP alone does not replace application completion/integrity checks. Recorded voice can later reuse this path; microphone capture belongs to Ammar.
 
-Deliver: schema, worker lifecycle, registration/login success and failure tests, duplicate username check and restart persistence. Then coordinate authorized messaging/history with package 1; attachments come after this foundation.
+## Shared milestone
 
-### Package 4 — prove devices early
+Two real clients authenticate, exchange private text, and retrieve authorized saved history through the existing UI. Then verify four physical clients, groups, attachments and required media. No one should wait until their entire package is finished before integrating.
 
-Work in `client/media/` and `tests/media/`; coordinate server signaling with package 1 and call widgets with package 2.
+## Kickoff call — about 40 minutes
 
-Start with a local microphone recording/playback and camera-preview experiment. Agree and add only needed pinned audio/video dependencies after installation on the demo OS. Keep capture outside the GUI thread, bound recording duration, and release devices on close/error. No network or fabricated remote participant is needed for this first check.
+Before: everyone installs Python 3.12/Git/editor, accepts collaborator access and opens the repo. Ammar opens the preview and this document.
 
-Deliver: reproducible device-check command, actual device/OS results, permission/missing-device handling and clean shutdown. Record measured results honestly. Then agree audio format, video encoding, channel binding and call IDs with package 1 before streaming.
+1. 0–5 min: explain one server plus multiple clients on the same LAN. One laptop can run server and client together.
+2. 5–10 min: demonstrate Home/private/groups. Say explicitly that messages are currently local; sample contacts are not live users.
+3. 10–15 min: show run.py → client/ui/app.py → client/demo/service.py. Explain that the final path goes through sockets to server storage. Show where each person will add code.
+4. 15–25 min: read each person's first task and checks together. Have them repeat their input, output and failure case in their own words.
+5. 25–35 min: agree first text envelope/framing, terminal harness and integration handoffs using INTEGRATION_CONTRACT.md. Record unresolved decisions there before independent wire implementations. Pick the demonstration OS and identify four laptops.
+6. 35–40 min: each person creates their branch, states the first small deliverable and agrees a same-day check-in time. Confirm exact October 22 submission time.
 
-## First shared milestone
+Say: “We are building one application together. Start with one small networking behaviour, use the shared protocol, demonstrate it in a terminal, and then we will connect it to the desktop UI. AI is allowed, but you must explain your code.”
 
-Two real clients on two devices authenticate to a server, exchange one private text message, display it in the existing UI and retrieve authorized saved history after reopening. This milestone combines packages 1–3; package 4 performs device checks in parallel. It is not complete when the local demo works.
-
-Integrate small pieces daily; do not wait for all modules to be finished. The required final baseline remains four physical clients and the full feature list in FINAL_PLAN.md.
-
-## Daily handoff
-
-Use [HANDOFF_TEMPLATE.md](HANDOFF_TEMPLATE.md). Each person owns their tests, report notes and a short explanation. Ask for an interface decision before changing another package's contracts. Do not invent mutually incompatible message formats in separate AI sessions.
-
-The Oct 15 checkpoints were planned targets, not completed implementation. As of Oct 16, only the local desktop foundation is verified. Reassess the remaining schedule at role assignment; preserve the required networking/media work before decorative polish.
+After: review first experiments together and integrate incrementally. Each person writes their own feature explanation/report notes and rehearses the overall client-server flow.

@@ -2,7 +2,7 @@
 
 ## Purpose and authority
 
-Help the Chatters team (Ammar, Abdullah, Ashna, Ayesha), a four-person BSCS team implement and understand its October 22 Computer Networks project. Read docs/FINAL_PLAN.md, docs/INTEGRATION_CONTRACT.md, docs/TEAM_WORKFLOW.md, and the assigned member guide before editing. If these files are alongside this file in the planning packet, use those local paths. The final plan supersedes earlier discussion drafts. Respect explicit later human decisions; update documentation when the team changes the plan.
+Help the Chatters team (Ammar, Abdullah, Ashna, Ayesha), a four-person BSCS team implement and understand its October 22 Computer Networks project. Read docs/FINAL_PLAN.md, docs/INTEGRATION_CONTRACT.md, docs/TEAM_WORKFLOW.md, and the assigned section of docs/TEAM_START.md before editing. If these files are alongside this file in the planning packet, use those local paths. The final plan supersedes earlier discussion drafts. Respect explicit later human decisions; update documentation when the team changes the plan.
 
 ## Scope
 
@@ -20,7 +20,7 @@ Keep GUI changes on its main thread; use queued signals from workers. Use framed
 
 ## Understanding and verification
 
-Explain non-obvious networking/concurrency logic, not every basic Python statement. For each task, show a successful scenario and a meaningful failure scenario. Run relevant checks where available; report commands/results honestly and distinguish passed, failed, and not run. Never invent test evidence, measured latency, screenshots, or completed features. Preserve reproducible bug details and fix causes rather than hiding errors.
+Explain non-obvious networking/concurrency logic, not every basic Python statement. For each task, show a successful scenario and a meaningful failure scenario. Keep test scripts and screenshots outside Git as requested; run relevant local checks and record results in PR descriptions; report commands/results honestly and distinguish passed, failed, and not run. Never invent test evidence, measured latency, screenshots, or completed features. Preserve reproducible bug details and fix causes rather than hiding errors.
 
 End with: changed files and behavior; tests/evidence; remaining limitations; and two short questions the member should be able to answer about the change. The human must trace an example and understand the important choices before merging. Follow the course's AI-use rules and attribution requirements when supplied.
 
@@ -30,4 +30,4 @@ Work in the assigned feature branch and allowed paths. Do not push, merge, rewri
 
 ## Confirmed team facts
 
-Repository: https://github.com/Ammar-Bin-Yasir/CN-Lab-Project. Roles remain unassigned; do not infer them from names or guide numbers. Final report format is PDF. Ammar reports AI is permitted provided each member understands and can explain the project; support that learning rather than hiding generated logic. Classmates may join the demonstration after the four-client baseline is tested. Exact submission time, presentation duration, and target operating systems remain unknown.
+Repository: https://github.com/Ammar-Bin-Yasir/CN-Lab-Project. Ammar: UI/integration/storage/discovery/live media. Abdullah: connections/presence. Ashna: text/groups. Ayesha: files. Final report format is PDF. Ammar reports AI is permitted provided each member understands and can explain the project; support that learning rather than hiding generated logic. Classmates may join the demonstration after the four-client baseline is tested. Exact submission time, presentation duration, and target operating systems remain unknown.

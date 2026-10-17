@@ -1,6 +1,6 @@
 # Shared Integration Contract
 
-This is a proposed minimal contract to finalize together before independent implementation. Do not generate four incompatible protocols. Member 1 coordinates changes and each affected owner updates producer and consumer together.
+This is a proposed minimal contract to finalize together before independent implementation. Do not generate four incompatible protocols. Ammar coordinates changes and each affected owner updates producer and consumer together.
 
 ## Control channel
 
