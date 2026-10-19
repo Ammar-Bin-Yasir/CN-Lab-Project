@@ -1,6 +1,5 @@
-"""PLACEHOLDER — not implemented.
+"""Group operations use the authenticated session and persistent worker."""
 
-Owner: Ashna.
-Purpose: Create, list, join and leave groups using persistent memberships.
-Agree interfaces in docs/INTEGRATION_CONTRACT.md before implementation.
-"""
+
+def handle(server, connection, kind, payload):
+    return server.store.operation(kind, connection.profile["id"], payload).result()

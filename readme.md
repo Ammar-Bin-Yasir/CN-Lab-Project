@@ -1,72 +1,70 @@
 # Chatters
 
-Python desktop LAN chat project. Submission: October 22, 2026.
+Python/PySide6 desktop LAN chat. One server owns accounts, groups, history and attachments. Clients connect with usernames; no browser is involved. The former local demo has been removed.
 
-## Run the current local preview
+## Setup
 
-Use Python 3.12. From the repository root:
+Use Python **3.12**. On Linux/macOS:
 
 ```sh
-python -m venv .venv
+python3.12 -m venv .venv-live
+source .venv-live/bin/activate
 ```
 
-Activate with `source .venv/bin/activate` on Linux/macOS, or `.venv\Scripts\Activate.ps1` in Windows PowerShell. Then:
+On Windows PowerShell:
+
+```powershell
+py -3.12 -m venv .venv-live
+.venv-live\Scripts\Activate.ps1
+```
+
+Then install:
 
 ```sh
 python -m pip install -r requirements.txt
-python run.py --demo
 ```
 
-Choose Explore preview. Profiles, messages and groups are stored locally outside this repository. The UI is implemented; LAN/server communication, real file delivery and live calls are not implemented yet. The temporary demo adapter will be removed after real client/server flows work.
+All desktop/media dependencies are pinned. Audio requires PortAudio (for example the portaudio package on Fedora or libportaudio2 on Debian/Ubuntu); sounddevice includes support libraries on some platforms. Camera and microphone permissions/devices must be available. The server itself uses only Python's standard library and does not require Qt or media packages.
 
-## Team
+## Start the server
 
-| Person | Ownership |
+On one computer, from the repository root:
+
+```sh
+python run_server.py
+```
+
+Defaults: TCP 5050 for chat, TCP 5051 for file transfers, TCP 5052 for calls, UDP 5051 for discovery. TCP and UDP may share a port number. Allow these ports in the host firewall for the demonstration LAN. Devices need to reach one another; some campus/guest Wi-Fi isolates clients. If needed use a trusted hotspot/router that allows local traffic.
+
+Server options: `--host 0.0.0.0 --port 5050 --data runtime`. Media/files use the next two TCP ports. `--no-discovery` disables UDP advertising. Stop with Ctrl+C. Accounts and history remain under the selected data directory; attachment files live under its files/ folder. Back up the entire directory together, not just SQLite. Use a fresh data directory for a clean demonstration.
+
+## Start each client
+
+```sh
+python run.py
+```
+
+Click Find LAN server or enter the server's local address, such as `192.168.1.10:5050`, and Connect. `127.0.0.1:5050` works only when client and server run on the same computer. Register a unique account or log in. Registration also signs in. One active connection per account is allowed, so use a different account on each demonstration client.
+
+Home lists other connected app users. Select someone to start a private conversation. Enter sends; Shift+Enter creates a new line. Direct sending requires an online recipient. Existing conversations/history remain visible after people disconnect.
+
+Use + in the rail to create a group and the browse button to join one. Protected groups have a reusable shared password. Membership and groups survive restarts. New members can read saved group history; leaving revokes access. There are no admin roles.
+
+Use + beside the message input to send a file up to 20 MiB. Save attachment downloads and verifies a file; nothing executes automatically. Record creates a voice message of up to 60 seconds; Stop and send uploads it, Cancel discards it. Play voice message downloads/plays that recording. Voice/video calls are one-to-one; accept/reject from the incoming prompt, mute/end in the call window. Use headphones. Other pairs may call independently.
+
+A server acknowledgement means saved/accepted, not read by the recipient. After a timeout/disconnect the outcome of a pending write can be uncertain: reconnect, log in and inspect history before retrying. Clients do not silently replay messages. No cloud service, TLS or end-to-end encryption is implemented; use demonstration credentials, not personal reused passwords.
+
+## Ownership and reading order
+
+| Person | Main code |
 |---|---|
-| Ammar | Desktop UI, integration, network adapter, accounts/storage, discovery, live audio/video |
-| Abdullah | Server connections, client workers, presence and disconnect handling |
-| Ashna | Private/group text routing and membership checks, coordinated with Ammar's storage |
-| Ayesha | File-transfer channels, bounded chunks, checksums and interruption handling |
+| Ammar | client/ui/, client/network/{adapter,connection,discovery}.py, client/media/, shared/protocol.py, server/storage/, services/{auth,calls}.py, transport/discovery.py |
+| Abdullah | server/transport/{listener,connection,registry}.py |
+| Ashna | server/services/{messaging,groups}.py, coordinating storage with Ammar |
+| Ayesha | client/network/files.py, server/services/files.py, coordinating attachment metadata with Ammar |
 
-Start with [team tasks and call guide](docs/TEAM_START.md), [workflow](docs/TEAM_WORKFLOW.md), [protocol agreement](docs/INTEGRATION_CONTRACT.md) and [full scope](docs/FINAL_PLAN.md). Follow AGENTS.md when using AI.
+Read run_server.py → listener.py → connection.py for the server and run.py → ui/app.py → network/adapter.py → network/connection.py for the client. Services apply permissions; only the database worker accesses SQLite. Protocol details and current verification evidence are in docs/INTEGRATION_CONTRACT.md. Tests/screenshots remain outside Git as requested.
 
-Screenshots, test tooling and evidence are maintained locally by Ammar. Verification is still required for every change; include commands and actual results in your PR. There is no automated test suite distributed in this minimal checkout.
+## Verification limits
 
-## Server account storage (implemented separately)
-
-`server/storage/accounts.py` now provides a worker-owned SQLite account store with registration and password verification. Its API and handoff are in [INTEGRATION_CONTRACT.md](docs/INTEGRATION_CONTRACT.md#implemented-account-storage-boundary--october-19). This is not yet connected to a server listener or the desktop login screen. Preview accounts remain separate.
-
-## Component ownership map
-
-Files marked PLACEHOLDER contain documentation only; importing or executing them does not implement the described behaviour. File names mark work boundaries, not frozen function signatures. Empty __init__.py files make folders Python packages.
-
-```text
-run.py                         Ammar — current desktop launcher
-run_server.py                  Ammar + Abdullah — planned server launcher
-shared/protocol.py             Ammar coordinates — common wire format
-client/
-  ui/app.py, theme.qss          Ammar — existing interface
-  ui/call_window.py            Ammar — call interface
-  demo/                        Temporary local preview; remove after integration
-  network/connection.py        Ammar — background socket client
-  network/adapter.py           Ammar — Qt request/result bridge
-  network/discovery.py         Ammar — find servers
-  network/files.py             Ayesha — client file transfers
-  media/audio.py, video.py     Ammar — microphone/speaker/camera
-  media/recording.py, calls.py  Ammar — recorded/live media
-server/
-  transport/listener.py        Abdullah — accept clients
-  transport/connection.py      Abdullah — per-client I/O
-  transport/registry.py        Abdullah — connections and presence
-  transport/discovery.py       Ammar — discovery replies
-  services/auth.py             Ammar — authentication/session integration
-  services/messaging.py        Ashna — private/group text routing
-  services/groups.py           Ashna — group operations
-  services/files.py            Ayesha — server file transfers
-  services/calls.py            Ammar — call coordination
-  storage/accounts.py          Ammar — implemented account worker
-  storage/conversations.py     Ammar — group/message persistence
-  storage/attachments.py       Ammar — attachment metadata
-```
-
-Storage placeholders must extend/use the existing worker rather than creating competing SQLite workers or connections. Ashna and Ayesha coordinate storage API needs with Ammar; Abdullah coordinates authentication binding with Ammar. The current UI remains in app.py; extra screen files are unnecessary until the implementation needs them. Tests and screenshots remain outside this repository.
+Local tests exercise four real TCP clients, authentication/access failures, persistent text/groups, binary transfers, two simultaneous call pairs with synthetic media packets, discovery, and two real offscreen Qt clients. Local hardware checks also opened microphone/speaker, recorded/played a short sample, captured a camera frame, and exercised the actual media workers through the local relay. Audio was muted during call tests to avoid feedback; no captured content was retained. This is not evidence of four physical laptops or acceptable end-to-end call sound/video quality. Verify those on the actual demonstration setup before submission. Device-specific failures are shown in the UI; do not claim unavailable media works.
