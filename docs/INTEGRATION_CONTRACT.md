@@ -36,3 +36,23 @@ Client/server agree on file chunk size, image encoding/resolution, audio sample 
 ## Minimum contract tests
 
 Fragmented/combined control frames; oversize rejection; simultaneous sends; invalid credentials; private-history denial; protected-group wrong password; file checksum and interrupted transfer; call busy race; one call ending while another continues. Test behavior rather than mocking away the boundaries being verified.
+
+## Implemented account-storage boundary — October 19
+
+Ammar's `server/storage/accounts.py` provides `AccountStore(path)`. It creates a server-owned users table; it does not import or migrate preview accounts. Stable integer IDs identify users. Usernames normalize with Unicode NFKC, whitespace stripping and lowercase, then require 3–32 ASCII letters/numbers/underscores. Display names allow up to 64 characters without control characters. Passwords require 8–128 characters and use independent 16-byte salts with scrypt.
+
+```python
+from server.storage import AccountStore
+
+store = AccountStore('runtime/server.sqlite')
+profile = store.register('ammar', 'Ammar', 'demonstration-password').result(timeout=5)
+profile = store.authenticate('ammar', 'demonstration-password').result(timeout=5)
+# profile: {'id': 1, 'username': 'ammar', 'display_name': 'Ammar'}
+store.close()
+```
+
+These calls belong in server workers, never GUI handlers. Both methods return Futures; the sole storage worker owns its SQLite connection. Registration commits before returning success. Validation, duplicate usernames and incorrect credentials raise ValueError through the Future. A full pending queue raises queue.Full immediately; a closed store raises RuntimeError. A Future wait timeout does not cancel a possibly executing write: do not blindly retry registration. Database setup failures propagate from construction. close() drains accepted jobs and joins the worker; call it from the coordinating server thread, not a Future callback running on the database worker. Do not block while holding the connection-registry lock.
+
+Abdullah's transport must use the returned ID as authenticated connection state, enforce the session policy and never accept a client-supplied sender ID as authentication. This storage component does not create tokens, reserve active sessions, rate-limit login or authorize messaging. Public profiles contain no hashes or salts. Mapping ValueError into stable wire error codes and agreeing login/register payloads remain integration work; the example above is a Python API, not a frozen network schema.
+
+Local checks (outside Git) verified normalized duplicate rejection, incorrect/unknown credentials, invalid input, simultaneous duplicate registration, stable identity after restart, closed-store rejection and invalid database-path startup. No LAN or GUI authentication is claimed by those checks.
