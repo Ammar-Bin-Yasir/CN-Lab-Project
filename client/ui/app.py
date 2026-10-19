@@ -1,30 +1,53 @@
-"""Qt presentation layer. All preview data access goes through DemoService."""
-import sys
-from pathlib import Path
-from PySide6.QtCore import Qt, Signal, QStandardPaths, QTimer
-from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-    QHBoxLayout, QLabel, QPushButton, QLineEdit, QTextEdit, QFrame, QScrollArea,
-    QDialog, QCheckBox, QMessageBox, QInputDialog, QFileDialog)
-from client.demo import DemoService, PEOPLE
+"""Chatters real desktop client. UI operations are asynchronous network requests."""
 
-# helper to create a QLabel with a style and optional word wrap
-def label(text, style='', wrap=False):
-    item = QLabel(text)
+import sys
+import tempfile, uuid
+from pathlib import Path
+from datetime import datetime
+from threading import Thread
+from client.network import files
+from client.media.recording import Recorder, play
+from client.ui.call_window import CallWindow
+from PySide6.QtCore import Qt, Signal, QTimer, QObject
+from PySide6.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QLineEdit,
+    QTextEdit,
+    QFrame,
+    QScrollArea,
+    QDialog,
+    QCheckBox,
+    QMessageBox,
+    QInputDialog,
+    QFileDialog,
+)
+from client.network.adapter import NetworkAdapter
+from client.network.discovery import discover
+
+
+def label(text, style="", wrap=False):
+    item = QLabel(str(text))
     item.setTextFormat(Qt.PlainText)
     item.setObjectName(style)
     item.setWordWrap(wrap)
     return item
 
-# helper to create a QPushButton with a style, click action, and optional tooltip
-def button(text, action, style='', tip=''):
+
+def button(text, action, style="", tip=""):
     item = QPushButton(text)
     item.setObjectName(style)
     item.clicked.connect(action)
-    item.setCursor(Qt.PointingHandCursor)
     item.setToolTip(tip or text)
+    item.setCursor(Qt.PointingHandCursor)
     return item
 
-# helper to clear a layout and delete its widgets and sub-layouts
+
 def clear(layout):
     while layout.count():
         item = layout.takeAt(0)
@@ -35,283 +58,1009 @@ def clear(layout):
             clear(item.layout())
             item.layout().deleteLater()
 
-# Additional functionality for the text composer to emit a signal when the user presses Enter without Shift.
+
 class Composer(QTextEdit):
     submitted = Signal()
 
     def keyPressEvent(self, event):
-        if event.key() in (Qt.Key_Return, Qt.Key_Enter) and not event.modifiers() & Qt.ShiftModifier:
+        if (
+            event.key() in (Qt.Key_Return, Qt.Key_Enter)
+            and not event.modifiers() & Qt.ShiftModifier
+        ):
             self.submitted.emit()
         else:
             super().keyPressEvent(event)
 
-# Window is the object that manages what the user sees and how the interface reacts
+
+class DiscoveryBridge(QObject):
+    found = Signal(object)
+    work_done = Signal(object, object, object)
+    progress = Signal(str)
+
+
 class Window(QMainWindow):
-    def __init__(self, service):
+    def __init__(self, adapter):
         super().__init__()
-        
-        # service is the object that manages each clients personal data and requests. 
-        self.service = service
+        self.adapter = adapter
         self.target = None
         self.drafts = {}
-        
-        self.setWindowTitle('Chatters · Desktop preview')
+        self.histories = {}
+        self.unread = {}
+        self.state = dict(people=[], groups=[], conversations=[], online=[])
+        self.session = 0
+        self.history_serial = 0
+        self.pending_sends = set()
+        self.setWindowTitle("Chatters")
         self.resize(1180, 780)
         self.setMinimumSize(900, 620)
-        self.setStyleSheet(Path(__file__).with_name('theme.qss').read_text())
-
-        # builds the fist screen after configs above.
+        self.setStyleSheet(Path(__file__).with_name("theme.qss").read_text())
+        adapter.connected.connect(self.connected)
+        adapter.disconnected.connect(self.lost)
+        adapter.server_event.connect(self.on_server_event)
+        self.discovery = DiscoveryBridge()
+        self.discovery.found.connect(self.discovered)
+        self.discovery.work_done.connect(self.work_done)
+        self.discovery.progress.connect(self.transfer_progress)
+        self.call_states = {}
+        self.call_window = None
+        self.record_dialog = None
+        self.transferring = False
+        self.recording_busy = False
+        self.transfer_error = ""
         self.login_screen()
 
-    # builds the login screen
+    def background(self, task, done):
+        def run():
+            try:
+                result = task()
+                error = None
+            except Exception as exc:
+                result = None
+                error = str(exc)
+            self.discovery.work_done.emit(done, result, error)
+
+        Thread(target=run, name="chatters-task", daemon=True).start()
+
+    def work_done(self, done, result, error):
+        done(result, error)
+
+    def transfer_progress(self, text):
+        if self.target and hasattr(self, "feedback"):
+            self.feedback.setText(text)
+
     def login_screen(self):
+        self.session += 1
+        self.target = None
         root = QWidget()
-        outer = QHBoxLayout(root)
-        outer.setContentsMargins(60, 40, 60, 40)
+        row = QHBoxLayout(root)
+        row.setContentsMargins(60, 40, 60, 40)
         intro = QVBoxLayout()
-        intro.addWidget(label('chatters', 'brand'))
+        intro.addWidget(label("chatters", "brand"))
         intro.addStretch()
-        intro.addWidget(label('A little closer.\nOne conversation at a time.', 'title', True))
-        intro.addWidget(label('Your people. Your groups. Your campus.', 'muted'))
-        intro.addSpacing(20)
-        intro.addWidget(label('DESKTOP PREVIEW\nExplore the interface before we connect the LAN server.\nMessages and profiles stay on this computer.', 'muted', True))
+        intro.addWidget(
+            label("A little closer.\nOne conversation at a time.", "title", True)
+        )
+        intro.addWidget(label("Your people. Your groups. Your LAN.", "muted"))
         intro.addStretch()
-        outer.addLayout(intro, 1)
-        card = QFrame(); card.setObjectName('card'); card.setFixedWidth(370)
-        form = QVBoxLayout(card); form.setContentsMargins(28, 32, 28, 32); form.setSpacing(16)
-        form.addWidget(label('Welcome back', 'title'))
-        form.addWidget(label('Local preview · no server connected', 'muted'))
-        self.username = QLineEdit(); self.username.setPlaceholderText('Username'); self.username.setAccessibleName('Username')
-        self.display_name = QLineEdit(); self.display_name.setPlaceholderText('Display name (for registration)')
-        self.password = QLineEdit(); self.password.setPlaceholderText('Preview password'); self.password.setEchoMode(QLineEdit.Password)
-        for field in (self.username, self.display_name, self.password): form.addWidget(field)
-        self.auth_error = label('', 'error', True); form.addWidget(self.auth_error)
-        form.addWidget(button('Log in to local profile', lambda: self.authenticate(False), 'primary'))
-        form.addWidget(button('Create local profile', lambda: self.authenticate(True)))
-        form.addWidget(label('Or take a look without creating a profile.', 'muted', True))
-        form.addWidget(button('Explore preview  →', self.enter_preview))
-        form.addWidget(label('Server discovery and real account login will be connected during the networking phase.', 'muted', True))
+        row.addLayout(intro, 1)
+        card = QFrame()
+        card.setObjectName("card")
+        card.setFixedWidth(390)
+        form = QVBoxLayout(card)
+        form.setContentsMargins(28, 28, 28, 28)
+        form.setSpacing(14)
+        form.addWidget(label("Welcome to Chatters", "title", True))
+        form.addWidget(
+            label("Connect to the computer running the server.", "muted", True)
+        )
+        self.address = QLineEdit("127.0.0.1:5050")
+        self.address.setAccessibleName("Server address")
+        form.addWidget(self.address)
+        form.addWidget(button("Find LAN server", self.find_servers))
+        self.connect_button = button("Connect", self.connect_server, "primary")
+        form.addWidget(self.connect_button)
+        self.connection_status = label("Not connected", "muted", True)
+        form.addWidget(self.connection_status)
+        self.username = QLineEdit()
+        self.username.setPlaceholderText("Username")
+        self.display_name = QLineEdit()
+        self.display_name.setPlaceholderText("Display name (for new accounts)")
+        self.password = QLineEdit()
+        self.password.setPlaceholderText("Password · 8–128 characters")
+        self.password.setEchoMode(QLineEdit.Password)
+        for field in (self.username, self.display_name, self.password):
+            form.addWidget(field)
+        self.auth_error = label("", "error", True)
+        form.addWidget(self.auth_error)
+        self.login_button = button(
+            "Log in", lambda: self.authenticate(False), "primary"
+        )
+        self.register_button = button("Create account", lambda: self.authenticate(True))
+        form.addWidget(self.login_button)
+        form.addWidget(self.register_button)
+        self.login_button.setEnabled(False)
+        self.register_button.setEnabled(False)
         self.password.returnPressed.connect(lambda: self.authenticate(False))
-        outer.addWidget(card, 0, Qt.AlignVCenter)
+        row.addWidget(card, 0, Qt.AlignVCenter)
         self.setCentralWidget(root)
 
-    def authenticate(self, register):
+    def find_servers(self):
+        self.connection_status.setText("Finding servers…")
+        Thread(
+            target=lambda: self.discovery.found.emit(discover()), daemon=True
+        ).start()
+
+    def discovered(self, servers):
+        if self.adapter.profile:
+            return
+        if not servers:
+            self.connection_status.setText(
+                "No server found. Enter its LAN address manually."
+            )
+            return
+        choices = [f"{s['name']} · {s['host']}:{s['port']}" for s in servers]
+        selected, ok = QInputDialog.getItem(
+            self, "LAN servers", "Choose server", choices, 0, False
+        )
+        if ok:
+            server = servers[choices.index(selected)]
+            self.address.setText(f"{server['host']}:{server['port']}")
+            self.connect_server()
+
+    def connect_server(self):
         try:
-            if register: self.service.register(self.username.text(), self.display_name.text(), self.password.text())
-            else: self.service.login(self.username.text(), self.password.text())
-        except ValueError as error:
-            self.auth_error.setText(str(error)); return
-        self.shell()
+            host, port = self.address.text().strip().rsplit(":", 1)
+            port = int(port)
+            if not host or not 1 <= port <= 65535:
+                raise ValueError()
+        except ValueError:
+            self.connection_status.setText("Use an address such as 192.168.1.10:5050.")
+            return
+        self.login_button.setEnabled(False)
+        self.register_button.setEnabled(False)
+        self.connection_status.setText("Connecting…")
+        self.adapter.connect_server(host, port)
 
-    def enter_preview(self):
-        self.service.preview(); self.shell()
+    def connected(self):
+        self.connection_status.setText("Connected · sign in to continue")
+        self.login_button.setEnabled(True)
+        self.register_button.setEnabled(True)
 
-    # Creates the rail, sidebar and main panel
+    def lost(self, reason):
+        if self.call_window:
+            self.call_window.shutdown("Connection lost")
+        if self.record_dialog:
+            self.record_dialog.reject()
+        if self.target:
+            self.stash_draft()
+        if hasattr(self, "side") and self.adapter.profile is None:
+            self.login_screen()
+        self.connection_status.setText("Disconnected. Connect again to sign in.")
+        self.auth_error.setText(reason)
+        self.login_button.setEnabled(False)
+        self.register_button.setEnabled(False)
+
+    def authenticate(self, register):
+        if not self.login_button.isEnabled():
+            return
+        auth_session = self.session
+        self.auth_error.setText("Signing in…" if not register else "Creating account…")
+        self.login_button.setEnabled(False)
+        self.register_button.setEnabled(False)
+        payload = dict(username=self.username.text(), password=self.password.text())
+        if register:
+            payload["display_name"] = self.display_name.text()
+
+        def result(ok, data):
+            if auth_session != self.session:
+                return
+            if not ok:
+                self.auth_error.setText(data["message"])
+                self.login_button.setEnabled(self.adapter.ready)
+                self.register_button.setEnabled(self.adapter.ready)
+                return
+            self.adapter.profile = data["profile"]
+            self.adapter.token = data["token"]
+            self.adapter.file_port = data["file_port"]
+            self.adapter.media_port = data["media_port"]
+            self.password.clear()
+            self.shell()
+            self.refresh()
+
+        self.adapter.request("register" if register else "login", payload, result)
+
     def shell(self):
-        root = QWidget(); row = QHBoxLayout(root); row.setSpacing(0); row.setContentsMargins(0, 0, 0, 0)
-        rail = QWidget(); rail.setObjectName('rail'); rail.setFixedWidth(78)
-        self.rail = QVBoxLayout(rail); self.rail.setContentsMargins(12, 20, 12, 16); self.rail.setSpacing(12)
-        side = QWidget(); side.setObjectName('sidebar'); side.setFixedWidth(242)
-        self.side = QVBoxLayout(side); self.side.setContentsMargins(18, 22, 18, 18); self.side.setSpacing(12)
-        main = QWidget(); main.setObjectName('main')
-        self.main = QVBoxLayout(main); self.main.setContentsMargins(28, 22, 28, 20); self.main.setSpacing(18)
-        row.addWidget(rail); row.addWidget(side); row.addWidget(main, 1)
+        root = QWidget()
+        row = QHBoxLayout(root)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        rail = QWidget()
+        rail.setObjectName("rail")
+        rail.setFixedWidth(78)
+        self.rail = QVBoxLayout(rail)
+        self.rail.setContentsMargins(12, 20, 12, 16)
+        side = QWidget()
+        side.setObjectName("sidebar")
+        side.setFixedWidth(242)
+        self.side = QVBoxLayout(side)
+        self.side.setContentsMargins(18, 22, 18, 18)
+        main = QWidget()
+        main.setObjectName("main")
+        self.main = QVBoxLayout(main)
+        self.main.setContentsMargins(28, 22, 28, 20)
+        self.main.setSpacing(16)
+        row.addWidget(rail)
+        row.addWidget(side)
+        row.addWidget(main, 1)
         self.setCentralWidget(root)
         self.show_home()
 
+    def request(self, kind, payload, on_success=None):
+        session = self.session
+
+        def result(ok, data):
+            if session != self.session:
+                return
+            if ok:
+                if on_success:
+                    on_success(data)
+            else:
+                QMessageBox.warning(
+                    self, "Request failed", data.get("message", "Unknown error")
+                )
+
+        self.adapter.request(kind, payload, result)
+
+    def refresh(self, on_complete=None):
+        session = self.session
+
+        def result(ok, data):
+            if not ok or session != self.session or not self.adapter.profile:
+                return
+            self.state = data
+            if self.target:
+                if self.target.startswith("group:") and not self.group(self.target):
+                    self.show_home()
+                else:
+                    self.navigation()
+            else:
+                self.show_home()
+
+            if on_complete:
+                on_complete()
+
+        self.adapter.request("snapshot", {}, result)
+
+    def on_server_event(self, kind, data):
+        if not self.adapter.profile:
+            return
+        if kind == "call_incoming":
+            if self.call_window and not self.call_window.ending or self.recording_busy:
+                self.adapter.request(
+                    "reject_call", {"call_id": data["id"]}, lambda *_: None
+                )
+                return
+            accepted = (
+                QMessageBox.question(
+                    self,
+                    "Incoming " + data["mode"] + " call",
+                    data.get("caller_name", "Someone") + " is calling. Accept?",
+                )
+                == QMessageBox.Yes
+            )
+            if accepted:
+                self.make_call_window(data, data.get("caller_name", "Incoming call"))
+                self.request(
+                    "accept_call",
+                    {"call_id": data["id"]},
+                    lambda result: self.call_window.activate(),
+                )
+            else:
+                self.adapter.request(
+                    "reject_call", {"call_id": data["id"]}, lambda *_: None
+                )
+        elif kind == "call_state":
+            self.call_states[data["id"]] = data
+            if self.call_window and self.call_window.info["id"] == data["id"]:
+                if data["state"] == "active":
+                    self.call_window.activate()
+                elif data["state"] == "ended":
+                    self.call_window.shutdown(data.get("reason", "Call ended"))
+        elif kind == "refresh":
+            self.refresh()
+        elif kind == "message_received":
+            target = data["target"]
+            if target == self.target:
+                self.load_history()
+            else:
+                self.unread[target] = self.unread.get(target, 0) + 1
+                self.navigation()
+
+    def group(self, target):
+        return next(
+            (
+                g
+                for g in self.state["groups"]
+                if f"group:{g['id']}" == target and g["joined"]
+            ),
+            None,
+        )
+
+    def person(self, target):
+        return next(
+            (p for p in self.state["people"] if f"user:{p['id']}" == target), None
+        )
+
     def stash_draft(self):
-        if self.target and hasattr(self, 'composer'):
+        if self.target and hasattr(self, "composer"):
             self.drafts[self.target] = self.composer.toPlainText()
-        self.target = None
 
-    def navigation(self, group=None):
-        clear(self.rail); clear(self.side)
-        home = button('C', self.show_home, 'railButton', 'Home · Online people'); home.setFixedSize(52, 52)
-        home.setCheckable(True); home.setChecked(group is None); self.rail.addWidget(home)
-        for g in self.service.groups(joined=True):
-            b = button(g['name'][:2].upper(), lambda checked=False, g=g: self.show_chat('group:' + str(g['id'])), 'railButton', g['name'])
-            b.setFixedSize(52, 52); b.setCheckable(True); b.setChecked(group is not None and g['id'] == group['id']); self.rail.addWidget(b)
-        self.rail.addWidget(button('+', self.create_group, 'railButton', 'Create group'))
-        self.rail.addWidget(button('⌕', self.browse_groups, 'railButton', 'Browse groups'))
+    def navigation(self):
+        clear(self.rail)
+        clear(self.side)
+        self.rail.addWidget(button("C", self.show_home, "railButton", "Home"))
+        for group in self.state["groups"]:
+            if group["joined"]:
+                target = f"group:{group['id']}"
+                count = self.unread.get(target, 0)
+                self.rail.addWidget(
+                    button(
+                        group["name"][:2].upper() + (" •" if count else ""),
+                        lambda checked=False, t=target: self.show_chat(t),
+                        "railButton",
+                        group["name"],
+                    )
+                )
+        self.rail.addWidget(
+            button("+", self.create_group, "railButton", "Create group")
+        )
+        self.rail.addWidget(
+            button("⌕", self.browse_groups, "railButton", "Browse groups")
+        )
         self.rail.addStretch()
-        self.rail.addWidget(label('LOCAL', 'muted'))
+        self.rail.addWidget(label("LAN", "muted"))
+        group = self.group(self.target)
         if group:
-            self.side.addWidget(label(group['name'], 'brand', True))
-            self.side.addWidget(label('Password protected' if group['protected'] else 'Public group', 'muted'))
-            self.side.addSpacing(20)
-            self.side.addWidget(label('MEMBERS', 'muted'))
-            self.side.addWidget(label(self.service.name + ' · You', wrap=True))
-            self.side.addWidget(label('Live member presence awaits the server.', 'muted', True))
+            self.side.addWidget(label(group["name"], "brand", True))
+            self.side.addWidget(
+                label(
+                    "Protected group" if group["protected"] else "Public group", "muted"
+                )
+            )
+            self.side.addWidget(label("MEMBERS", "muted"))
+            self.member_box = QVBoxLayout()
+            self.side.addLayout(self.member_box)
+            current = self.target
+            session = self.session
+
+            def members(data):
+                if self.target != current or self.session != session:
+                    return
+                clear(self.member_box)
+                for p in data:
+                    self.member_box.addWidget(
+                        label(
+                            p["display_name"]
+                            + (
+                                " · Online"
+                                if p["id"] in self.state["online"]
+                                else " · Offline"
+                            ),
+                            "muted",
+                            True,
+                        )
+                    )
+
+            self.request("members", {"target": current}, members)
             self.side.addStretch()
-            self.side.addWidget(button('Leave group', lambda: self.leave_group(group)))
+            self.side.addWidget(button("Leave group", self.leave_group))
         else:
-            self.side.addWidget(label('chatters', 'brand'))
-            self.side.addWidget(label('A space for your people.', 'muted'))
-            self.side.addSpacing(16)
-            self.side.addWidget(button('Online people', self.show_home, 'nav'))
-            self.side.addSpacing(12); self.side.addWidget(label('PRIVATE CONVERSATIONS', 'muted'))
-            chats = self.service.conversations()
-            for person in chats:
-                b = button(PEOPLE[person], lambda checked=False, p=person: self.show_chat(p), 'nav')
-                b.setCheckable(True); b.setChecked(self.target == person); self.side.addWidget(b)
-            if not chats: self.side.addWidget(label('Choose someone from Home to start a conversation.', 'muted', True))
+            self.side.addWidget(label("chatters", "brand"))
+            self.side.addWidget(button("Online people", self.show_home, "nav"))
+            self.side.addWidget(label("PRIVATE CONVERSATIONS", "muted"))
+            for target in self.state["conversations"]:
+                person = self.person(target)
+                if person:
+                    count = self.unread.get(target, 0)
+                    self.side.addWidget(
+                        button(
+                            person["display_name"] + (f" ({count})" if count else ""),
+                            lambda checked=False, t=target: self.show_chat(t),
+                            "nav",
+                        )
+                    )
             self.side.addStretch()
-        self.side.addWidget(label(self.service.name, wrap=True))
-        self.side.addWidget(label('Preview profile · saved locally', 'muted'))
-        self.side.addWidget(button('Sign out', self.sign_out, 'nav'))
+        self.side.addWidget(label(self.adapter.profile["display_name"], wrap=True))
+        self.side.addWidget(label("Connected to " + self.adapter.host, "muted", True))
+        self.side.addWidget(button("Sign out", self.sign_out, "nav"))
+        if self.target and hasattr(self, "send_button"):
+            person = self.person(self.target)
+            enabled = bool(group or person and person["id"] in self.state["online"])
+            self.send_button.setEnabled(
+                enabled and self.target not in self.pending_sends
+            )
+            self.composer.setEnabled(enabled)
 
-    def sign_out(self):
-        self.target = None; self.drafts.clear(); self.service.user = None; self.login_screen()
-
-    def preview_banner(self):
-        self.main.addWidget(label('LOCAL PREVIEW  /  Sample contacts. Nothing is sent over the network.', 'muted', True))
-
-    # displays the home screen with a list of people to chat with
     def show_home(self):
-        self.stash_draft(); self.navigation(); clear(self.main); self.preview_banner()
-        self.main.addWidget(label('Your people, right here.', 'title'))
-        self.main.addWidget(label('Start a private conversation or bring everyone together in a group.', 'muted', True))
-        search = QLineEdit(); search.setPlaceholderText('Find a preview contact…'); self.main.addWidget(search)
-        self.main.addWidget(label('SAMPLE PEOPLE — 3', 'muted'))
-        for index, (key, name) in enumerate(PEOPLE.items()):
-            card = QFrame(); card.setObjectName('card'); line = QHBoxLayout(card); line.setContentsMargins(18, 16, 18, 16)
-            avatar = label(name[0], 'brand'); avatar.setFixedWidth(38); line.addWidget(avatar)
-            text = QVBoxLayout(); text.addWidget(label(name)); text.addWidget(label('Preview contact · not live presence', 'muted')); line.addLayout(text, 1)
-            line.addWidget(button('Message  →', lambda checked=False, p=key: self.show_chat(p)))
+        self.stash_draft()
+        self.target = None
+        self.navigation()
+        clear(self.main)
+        self.main.addWidget(label("Your people, right here.", "title"))
+        self.main.addWidget(label("People connected to this Chatters server", "muted"))
+        search = QLineEdit()
+        search.setPlaceholderText("Find someone…")
+        self.main.addWidget(search)
+        people = [p for p in self.state["people"] if p["id"] in self.state["online"]]
+        if not people:
+            self.main.addWidget(
+                label(
+                    "No one else is online yet. Ask a teammate to connect.",
+                    "muted",
+                    True,
+                )
+            )
+        for person in people:
+            card = QFrame()
+            card.setObjectName("card")
+            row = QHBoxLayout(card)
+            row.addWidget(label(person["display_name"], "brand"), 1)
+            row.addWidget(label("@" + person["username"], "muted"))
+            row.addWidget(
+                button(
+                    "Message →",
+                    lambda checked=False, p=person: self.show_chat(f"user:{p['id']}"),
+                )
+            )
             self.main.addWidget(card)
-            search.textChanged.connect(lambda value, c=card, n=name: c.setVisible(value.lower() in n.lower()))
+            search.textChanged.connect(
+                lambda text, c=card, p=person: c.setVisible(
+                    text.lower() in (p["display_name"] + p["username"]).lower()
+                )
+            )
         self.main.addStretch()
-        self.main.addWidget(label('Make room for a conversation', 'brand'))
-        self.main.addWidget(label('No groups yet? Use + on the left to create your first one.\nGroups you join will stay in your navigation rail.', 'muted', True))
+        self.main.addWidget(
+            label("Use + to create a group, or ⌕ to browse groups.", "muted", True)
+        )
 
-    # displays the chat screen for a given target, which can be a person or a group
     def show_chat(self, target):
-        self.stash_draft(); self.target = target
-        group = next((g for g in self.service.groups(True) if target == f"group:{g['id']}"), None)
-        self.navigation(group); clear(self.main); self.preview_banner()
-        title = group['name'] if group else PEOPLE[target]
-        head = QHBoxLayout(); head.addWidget(label(title, 'title'), 1)
-        if not group:
-            for name in ('Voice call', 'Video call'):
-                b = button(name, lambda: None); b.setEnabled(False); b.setToolTip('Available after live media and networking integration'); head.addWidget(b)
+        self.stash_draft()
+        self.target = target
+        self.unread.pop(target, None)
+        group = self.group(target)
+        person = self.person(target)
+        if not group and not person:
+            self.show_home()
+            return
+        clear(self.main)
+        head = QHBoxLayout()
+        head.addWidget(
+            label(group["name"] if group else person["display_name"], "title"), 1
+        )
+        if person:
+            for text, mode in (("Voice call", "voice"), ("Video call", "video")):
+                b = button(text, lambda checked=False, m=mode: self.start_call(m))
+                b.setEnabled(person["id"] in self.state["online"])
+                head.addWidget(b)
         self.main.addLayout(head)
-        self.main.addWidget(label('Group conversation' if group else 'Private conversation · local preview', 'muted'))
-        self.scroll = QScrollArea(); self.scroll.setWidgetResizable(True)
-        self.messages = QWidget(); self.message_layout = QVBoxLayout(self.messages); self.message_layout.setContentsMargins(0, 12, 10, 12); self.message_layout.setSpacing(20)
-        self.scroll.setWidget(self.messages); self.main.addWidget(self.scroll, 1)
-        self.render_messages()
-        self.feedback = label('', 'error', True); self.main.addWidget(self.feedback)
-        composer_row = QHBoxLayout()
-        composer_row.addWidget(button('+', self.preview_attachment, tip='Preview an attachment'))
-        self.composer = Composer(); self.composer.setFixedHeight(84); self.composer.setPlaceholderText('Write a message…'); self.composer.setAccessibleName('Message'); self.composer.setPlainText(self.drafts.get(target, ''))
-        self.composer.submitted.connect(self.send); composer_row.addWidget(self.composer, 1)
-        composer_row.addWidget(button('Send', self.send, 'primary')); self.main.addLayout(composer_row)
-        self.main.addWidget(label('Enter to save locally · Shift + Enter for a new line · Voice recording pending media integration', 'muted', True))
+        self.main.addWidget(
+            label("Group history" if group else "Private conversation", "muted")
+        )
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        widget = QWidget()
+        self.message_layout = QVBoxLayout(widget)
+        self.scroll.setWidget(widget)
+        self.main.addWidget(self.scroll, 1)
+        self.feedback = label("Loading history…", "muted", True)
+        self.main.addWidget(self.feedback)
+        row = QHBoxLayout()
+        self.attach_button = button("+", self.attach_file, tip="Attach file")
+        row.addWidget(self.attach_button)
+        row.addWidget(
+            button(
+                "Record",
+                self.record_voice,
+                tip="Record a voice message, up to 60 seconds",
+            )
+        )
+        self.composer = Composer()
+        self.composer.setFixedHeight(84)
+        self.composer.setPlaceholderText("Write a message…")
+        self.composer.setPlainText(self.drafts.get(target, ""))
+        self.composer.submitted.connect(self.send)
+        row.addWidget(self.composer, 1)
+        self.send_button = button("Send", self.send, "primary")
+        row.addWidget(self.send_button)
+        self.main.addLayout(row)
+        self.main.addWidget(
+            label("Enter to send · Shift + Enter for a new line", "muted")
+        )
+        self.navigation()
+        self.load_history()
         self.composer.setFocus()
 
-    # builds visible message rows.
-    def render_messages(self):
+    def load_history(self):
+        target = self.target
+        if not target:
+            return
+        self.history_serial += 1
+        serial = self.history_serial
+        session = self.session
+
+        def result(ok, data):
+            if (
+                self.target != target
+                or self.session != session
+                or serial != self.history_serial
+            ):
+                return
+            if ok:
+                self.histories[target] = data
+                self.feedback.setText("")
+                self.render_messages(data)
+            else:
+                self.feedback.setText(data["message"])
+
+        self.adapter.request("history", {"target": target}, result)
+
+    def render_messages(self, rows):
+        bar = self.scroll.verticalScrollBar()
+        stick = bar.maximum() - bar.value() < 30
+        old = bar.value()
         clear(self.message_layout)
-        rows = self.service.history(self.target)
         if not rows:
-            self.message_layout.addStretch()
-            self.message_layout.addWidget(label('This is the start of something.', 'title'))
-            self.message_layout.addWidget(label('Say hello. Preview messages are saved only on this computer.', 'muted', True))
-        for sender, body, time in rows:
-            row = QHBoxLayout(); avatar = label(sender[:1].upper(), 'brand'); avatar.setFixedSize(36, 36); row.addWidget(avatar, 0, Qt.AlignTop)
-            column = QVBoxLayout(); column.setSpacing(6)
-            header = QHBoxLayout(); header.addWidget(label(sender)); header.addWidget(label(time + ' · Local only', 'muted')); header.addStretch(); column.addLayout(header)
-            message = label(body, wrap=True); message.setTextInteractionFlags(Qt.TextSelectableByMouse); column.addWidget(message)
-            row.addLayout(column, 1); self.message_layout.addLayout(row)
+            self.message_layout.addWidget(
+                label("This is the start of your conversation.", "muted", True)
+            )
+        for message in rows:
+            layout = QHBoxLayout()
+            layout.addWidget(
+                label(message["sender"][:1].upper(), "brand"), 0, Qt.AlignTop
+            )
+            body = QVBoxLayout()
+            try:
+                stamp = (
+                    datetime.fromisoformat(message["created"])
+                    .astimezone()
+                    .strftime("%b %d · %H:%M")
+                )
+            except ValueError:
+                stamp = message["created"]
+            body.addWidget(label(message["sender"] + "  ·  " + stamp, "muted"))
+            text = label(message["body"], wrap=True)
+            text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            body.addWidget(text)
+            if message.get("attachment"):
+                name = message.get("attachment_name") or "attachment"
+                body.addWidget(
+                    button(
+                        "Save " + (name if len(name) <= 45 else name[:42] + "…") + "…",
+                        lambda checked=False,
+                        f=message["attachment"],
+                        n=name: self.save_attachment(f, n),
+                    )
+                )
+                if name.startswith("chatters-voice-") and name.endswith(".wav"):
+                    body.addWidget(
+                        button(
+                            "Play voice message",
+                            lambda checked=False,
+                            f=message["attachment"]: self.play_voice(f),
+                        )
+                    )
+            layout.addLayout(body, 1)
+            self.message_layout.addLayout(layout)
         self.message_layout.addStretch()
-        QTimer.singleShot(0, lambda: self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().maximum()))
+        QTimer.singleShot(
+            0, self.scroll, lambda: bar.setValue(bar.maximum() if stick else old)
+        )
 
-    # User presses Send or Enter.
     def send(self):
-        try: self.service.send(self.target, self.composer.toPlainText())
-        except ValueError as error:
-            self.feedback.setText(str(error)); return
-        self.composer.clear(); self.drafts.pop(self.target, None); self.feedback.clear(); self.render_messages()
-        group = next((g for g in self.service.groups(True) if self.target == f"group:{g['id']}"), None)
-        self.navigation(group)
+        target = self.target
+        text = self.composer.toPlainText()
+        if not text.strip() or not self.send_button.isEnabled():
+            return
+        self.pending_sends.add(target)
+        self.send_button.setEnabled(False)
+        self.feedback.setText("Sending…")
+        session = self.session
 
-    def preview_attachment(self):
-        path, _ = QFileDialog.getOpenFileName(self, 'Preview attachment')
-        if not path: return
-        try:
-            size = Path(path).stat().st_size
-            if size > 20 * 1024 * 1024: raise ValueError('The attachment limit is 20 MiB.')
-            QMessageBox.information(self, 'Attachment preview', f'{Path(path).name}\n{size / 1024:.1f} KiB\n\nFile selection works. Upload and delivery await the networking implementation. No file has been sent or copied.')
-        except (OSError, ValueError) as error: self.feedback.setText(str(error))
+        def result(ok, data):
+            self.pending_sends.discard(target)
+            if session != self.session:
+                return
+            if self.target == target:
+                if ok:
+                    if self.composer.toPlainText() == text:
+                        self.composer.clear()
+                    self.feedback.setText("Accepted by server")
+                    self.load_history()
+                else:
+                    self.feedback.setText(data["message"])
+                self.navigation()
+            elif ok and self.drafts.get(target) == text:
+                self.drafts.pop(target, None)
+            self.refresh()
 
-    # User chooses to create a group
+        self.adapter.request("send_message", dict(target=target, body=text), result)
+
     def create_group(self):
-        dialog = QDialog(self); dialog.setWindowTitle('Create a group'); dialog.setMinimumWidth(400)
-        layout = QVBoxLayout(dialog); layout.setSpacing(16)
-        layout.addWidget(label('Bring your people together.', 'brand'))
-        name = QLineEdit(); name.setPlaceholderText('Group name'); layout.addWidget(name)
-        protected = QCheckBox('Require a shared password to join'); layout.addWidget(protected)
-        password = QLineEdit(); password.setEchoMode(QLineEdit.Password); password.setPlaceholderText('Group password'); password.setEnabled(False); protected.toggled.connect(password.setEnabled); layout.addWidget(password)
-        layout.addWidget(label('Members can read saved group history. No admin roles.\nThis creates a local preview group.', 'muted', True))
-        error = label('', 'error', True); layout.addWidget(error)
-        def create():
-            if protected.isChecked() and not password.text(): error.setText('Enter a password or choose a public group.'); return
-            try: gid = self.service.create_group(name.text(), password.text() if protected.isChecked() else '')
-            except ValueError as exc: error.setText(str(exc)); return
-            dialog.accept(); self.show_chat(f'group:{gid}')
-        layout.addWidget(button('Create group', create, 'primary')); layout.addWidget(button('Cancel', dialog.reject)); dialog.exec()
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Create group")
+        layout = QVBoxLayout(dialog)
+        name = QLineEdit()
+        name.setPlaceholderText("Group name")
+        layout.addWidget(name)
+        protected = QCheckBox("Require a shared password")
+        layout.addWidget(protected)
+        password = QLineEdit()
+        password.setEchoMode(QLineEdit.Password)
+        password.setEnabled(False)
+        protected.toggled.connect(password.setEnabled)
+        layout.addWidget(password)
+        layout.addWidget(
+            label(
+                "Members can view saved group history. No admin roles.", "muted", True
+            )
+        )
+        error = label("", "error", True)
+        layout.addWidget(error)
 
-    # User wants to find and join groups
+        def submit():
+            if protected.isChecked() and not password.text():
+                error.setText("Enter a shared password.")
+                return
+            self.request(
+                "create_group",
+                dict(
+                    name=name.text(),
+                    password=password.text() if protected.isChecked() else "",
+                ),
+                lambda data: (
+                    dialog.accept(),
+                    self.refresh(lambda: self.show_chat(data["target"])),
+                ),
+            )
+
+        layout.addWidget(button("Create", submit, "primary"))
+        layout.addWidget(button("Cancel", dialog.reject))
+        dialog.exec()
+
     def browse_groups(self):
-        dialog = QDialog(self); dialog.setWindowTitle('Browse local groups'); dialog.resize(450, 400)
-        layout = QVBoxLayout(dialog); layout.addWidget(label('Find your group', 'title'))
-        layout.addWidget(label('Joining gives access to saved group history.', 'muted', True))
-        scroll = QScrollArea(); scroll.setWidgetResizable(True); content = QWidget(); groups_layout = QVBoxLayout(content); scroll.setWidget(content); layout.addWidget(scroll)
-        groups = self.service.groups()
-        if not groups: groups_layout.addWidget(label('No groups yet. Create the first one with +.', 'muted', True))
-        for g in groups:
-            def join(checked=False, g=g):
-                password = ''
-                if g['protected'] and not g['joined']:
-                    password, ok = QInputDialog.getText(dialog, 'Protected group', 'Shared group password:', QLineEdit.Password)
-                    if not ok: return
-                try: self.service.join(g['id'], password)
-                except ValueError as error: QMessageBox.warning(dialog, 'Cannot join', str(error)); return
-                dialog.accept(); self.show_chat(f"group:{g['id']}")
-            groups_layout.addWidget(button(g['name'] + (' · Protected' if g['protected'] else ' · Public') + (' · Joined' if g['joined'] else ''), join))
-        groups_layout.addStretch(); layout.addWidget(button('Close', dialog.reject)); dialog.exec()
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Browse groups")
+        dialog.resize(420, 360)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(
+            label("Joining grants access to saved group history.", "muted", True)
+        )
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        entries = QVBoxLayout(content)
+        scroll.setWidget(content)
+        layout.addWidget(scroll)
+        for group in self.state["groups"]:
 
-    # User confirms leaving
-    def leave_group(self, group):
-        result = QMessageBox.question(self, 'Leave group?', 'The group and its messages will remain. You will need to join again to see them.')
-        if result == QMessageBox.Yes:
-            self.service.leave(group['id']); self.show_home()
+            def join(checked=False, g=group):
+                target = f"group:{g['id']}"
+                if g["joined"]:
+                    dialog.accept()
+                    self.show_chat(target)
+                    return
+                password = ""
+                if g["protected"]:
+                    password, ok = QInputDialog.getText(
+                        dialog,
+                        "Protected group",
+                        "Shared password:",
+                        QLineEdit.Password,
+                    )
+                    if not ok:
+                        return
+                self.request(
+                    "join_group",
+                    dict(target=target, password=password),
+                    lambda data: (
+                        dialog.accept(),
+                        self.refresh(lambda: self.show_chat(data["target"])),
+                    ),
+                )
+
+            entries.addWidget(
+                button(
+                    group["name"]
+                    + (" · Protected" if group["protected"] else " · Public")
+                    + (" · Joined" if group["joined"] else ""),
+                    join,
+                )
+            )
+        if not self.state["groups"]:
+            entries.addWidget(label("No groups yet. Create the first one.", "muted"))
+        entries.addStretch()
+        layout.addWidget(button("Close", dialog.reject))
+        dialog.exec()
+
+    def leave_group(self):
+        if (
+            QMessageBox.question(
+                self,
+                "Leave group?",
+                "The group and saved messages will remain. Rejoining may require its password.",
+            )
+            == QMessageBox.Yes
+        ):
+            self.request(
+                "leave_group",
+                dict(target=self.target),
+                lambda data: (self.show_home(), self.refresh()),
+            )
+
+    def attach_file(self):
+        if self.transferring:
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Send attachment")
+        if path:
+            self.upload_file(path)
+
+    def upload_file(self, path, temporary=False):
+        if self.transferring:
+            return
+        target = self.target
+        if not target:
+            return
+        self.transferring = True
+        session = self.session
+        host, port, token = (
+            self.adapter.host,
+            self.adapter.file_port,
+            self.adapter.token,
+        )
+
+        def done(result, error):
+            self.transferring = False
+            if temporary:
+                Path(path).unlink(missing_ok=True)
+            if session != self.session:
+                return
+            if error:
+                QMessageBox.warning(self, "Transfer failed", error)
+            elif self.target == target:
+                self.load_history()
+            self.refresh()
+
+        self.background(
+            lambda: files.upload(
+                host,
+                port,
+                token,
+                target,
+                path,
+                lambda n, total: self.discovery.progress.emit(
+                    f"Uploading… {n * 100 // max(total, 1)}%"
+                ),
+            ),
+            done,
+        )
+
+    def save_attachment(self, file_id, name="attachment"):
+        if self.transferring:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save attachment (choose a filename)", name
+        )
+        if not path:
+            return
+        self.transferring = True
+        session = self.session
+        host, port, token = (
+            self.adapter.host,
+            self.adapter.file_port,
+            self.adapter.token,
+        )
+
+        def done(result, error):
+            self.transferring = False
+            if session != self.session:
+                return
+            if error:
+                QMessageBox.warning(self, "Download failed", error)
+            else:
+                self.transfer_progress("Saved and checksum verified: " + str(result))
+                if (
+                    Path(path).suffix.lower() == ".wav"
+                    and QMessageBox.question(
+                        self, "Voice recording", "Play the saved WAV recording?"
+                    )
+                    == QMessageBox.Yes
+                ):
+                    self.background(
+                        lambda: play(path),
+                        lambda result, error: QMessageBox.warning(
+                            self, "Playback failed", error
+                        )
+                        if error
+                        else None,
+                    )
+
+        self.background(
+            lambda: files.download(
+                host,
+                port,
+                token,
+                file_id,
+                path,
+                lambda n, total: self.discovery.progress.emit(
+                    f"Downloading… {n * 100 // max(total, 1)}%"
+                ),
+            ),
+            done,
+        )
+
+    def play_voice(self, file_id):
+        if self.call_window and not self.call_window.ending or self.recording_busy:
+            return
+        host, port, token = (
+            self.adapter.host,
+            self.adapter.file_port,
+            self.adapter.token,
+        )
+        path = Path(tempfile.gettempdir()) / (
+            "chatters-play-" + uuid.uuid4().hex + ".wav"
+        )
+
+        def task():
+            try:
+                files.download(host, port, token, file_id, path)
+                play(path)
+            finally:
+                path.unlink(missing_ok=True)
+
+        self.background(
+            task,
+            lambda result, error: QMessageBox.warning(self, "Playback failed", error)
+            if error
+            else None,
+        )
+
+    def record_voice(self):
+        if self.recording_busy or self.transferring:
+            return
+        if self.call_window and not self.call_window.ending:
+            QMessageBox.information(
+                self, "Microphone busy", "End the live call before recording."
+            )
+            return
+        self.recording_busy = True
+        recorder = Recorder()
+        session = self.session
+        target = self.target
+
+        def ready(result, error):
+            if session != self.session:
+                self.background(lambda: recorder.finish(), lambda *_: None)
+                self.recording_busy = False
+                return
+            if error:
+                self.recording_busy = False
+                QMessageBox.warning(self, "Microphone unavailable", error)
+                return
+            dialog = QDialog(self)
+            self.record_dialog = dialog
+            dialog.setWindowTitle("Record voice message")
+            layout = QVBoxLayout(dialog)
+            timer_label = label("Recording… 0 / 60 seconds")
+            layout.addWidget(timer_label)
+            timer = QTimer(dialog)
+            elapsed = [0]
+            finished = [False]
+
+            def finish(send=False):
+                if finished[0]:
+                    return
+                finished[0] = True
+                timer.stop()
+                dialog.accept()
+                self.record_dialog = None
+                path = (
+                    Path(tempfile.gettempdir())
+                    / ("chatters-voice-" + uuid.uuid4().hex + ".wav")
+                    if send
+                    else None
+                )
+
+                def saved(result, error):
+                    self.recording_busy = False
+                    if error:
+                        QMessageBox.warning(self, "Recording failed", error)
+                        return
+                    if path:
+                        if self.session == session and self.target == target:
+                            self.upload_file(path, True)
+                        else:
+                            path.unlink(missing_ok=True)
+
+                self.background(lambda: recorder.finish(path), saved)
+
+            def tick():
+                elapsed[0] += 1
+                timer_label.setText(f"Recording… {elapsed[0]} / 60 seconds")
+                if elapsed[0] >= 60:
+                    finish(True)
+
+            timer.timeout.connect(tick)
+            timer.start(1000)
+            layout.addWidget(button("Stop and send", lambda: finish(True), "primary"))
+            layout.addWidget(button("Cancel", lambda: finish(False)))
+            dialog.rejected.connect(lambda: finish(False))
+            dialog.exec()
+
+        self.background(recorder.start, ready)
+
+    def make_call_window(self, info, title):
+        if self.call_window:
+            self.call_window.close()
+        self.call_window = CallWindow(self.adapter, info, title, self)
+        self.call_window.show()
+        state = self.call_states.get(info["id"], {})
+        if state.get("state") == "active":
+            self.call_window.activate()
+        elif state.get("state") == "ended":
+            self.call_window.shutdown(state.get("reason", "Call ended"))
+
+    def start_call(self, mode):
+        if self.recording_busy:
+            QMessageBox.information(
+                self, "Microphone busy", "Finish the recording first."
+            )
+            return
+        if self.call_window and not self.call_window.ending:
+            self.call_window.raise_()
+            return
+        person = self.person(self.target)
+        if not person:
+            return
+        self.request(
+            "request_call",
+            dict(recipient=person["id"], mode=mode),
+            lambda data: self.make_call_window(data, person["display_name"]),
+        )
+
+    def sign_out(self):
+        if self.call_window:
+            self.call_window.close()
+        if self.record_dialog:
+            self.record_dialog.reject()
+        self.session += 1
+        self.adapter.close()
+        self.drafts.clear()
+        self.histories.clear()
+        self.unread.clear()
+        self.state = dict(people=[], groups=[], conversations=[], online=[])
+        self.login_screen()
+
+    def closeEvent(self, event):
+        if self.call_window:
+            self.call_window.close()
+        if self.record_dialog:
+            self.record_dialog.reject()
+        self.adapter.close()
+        event.accept()
 
 
 def main():
-    # QApplication manages the desktop application: mouse clicks, keyboard input,
-    # window events, and other Qt behaviour. A Qt Widgets application needs one of these objects.
     app = QApplication(sys.argv)
-    app.setApplicationName('ChattersPreview')
-    app.setOrganizationName('Chatters')
-
-    # The database is stored in the standard local application data folder for the OS.
-    path = Path(
-        QStandardPaths.writableLocation(
-            QStandardPaths.AppLocalDataLocation
-        )
-    ) / 'preview.sqlite'
-
-    service = DemoService(path)
-
-    window = Window(service)
+    app.setApplicationName("Chatters")
+    app.setOrganizationName("Chatters")
+    adapter = NetworkAdapter()
+    window = Window(adapter)
     window.show()
-
     try:
         return app.exec()
     finally:
-        service.close()
+        adapter.close()
 
 
-if __name__ == '__main__':
-    sys.exit(main())
+if __name__ == "__main__":
+    raise SystemExit(main())

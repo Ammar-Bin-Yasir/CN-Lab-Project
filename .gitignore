@@ -21,3 +21,7 @@ tests/
 pytest.ini
 requirements-dev.txt
 local-notes/
+
+.venv*/
+
+.ruff_cache/
