@@ -4,7 +4,7 @@ Assignments confirmed October 17, 2026. These replace the previous four-package 
 
 ## Current status
 
-Working: local desktop UI, preview profiles, private/group history and navigation. Temporary: client/demo/ and --demo. Pending: actual server, socket client adapter, authentication/storage integration, discovery, transfers and live calls. Empty networking/server directories are not implementations and may not appear in Git until code is added.
+Working: local desktop UI, preview profiles, private/group history and navigation. Temporary: client/demo/ and --demo. Pending: actual server, socket client adapter, authentication/storage integration, discovery, transfers and live calls. Planned modules now exist as clearly marked placeholders; see the ownership map in the root README. Server account storage is implemented separately but is not yet integrated with sockets or desktop login.
 
 ## Ammar — application and integration
 
@@ -22,7 +22,7 @@ Deliver: run instructions, a working demonstration and explanation of bind/liste
 
 ## Ashna — private and group text
 
-Branch: feature/messaging. Work: server/services/messaging.py and server/services/groups.py (create them); coordinate transport with Abdullah and persistence with Ammar.
+Branch: feature/messaging. Work: server/services/messaging.py and server/services/groups.py (placeholders provided); coordinate transport with Abdullah and persistence with Ammar.
 
 First: write routing functions using a small in-memory registry/harness, then attach them to the shared server. Route a private message only to its recipient; route group messages only to current members. Implement create/join/leave behaviour using Ammar's identity/storage service. Public/protected groups and persistent memberships remain required; do not invent a second database.
 
