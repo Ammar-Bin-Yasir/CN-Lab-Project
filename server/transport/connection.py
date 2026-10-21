@@ -39,6 +39,12 @@ class Connection:
         user = self.profile["id"]
         if kind == "ping":
             return {}
+        if kind in ("profile_get", "profile_update"):
+            result = self.server.store.operation(kind, user, payload).result()
+            if kind == "profile_update":
+                self.profile = {key: result[key] for key in ("id", "username", "display_name")}
+                self.server.registry.broadcast("refresh", {"profile_id": user})
+            return result
         if kind == "snapshot":
             return {
                 **self.server.store.operation("snapshot", user, {}).result(),

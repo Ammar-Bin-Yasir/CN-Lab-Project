@@ -11,7 +11,8 @@ TCP 5050 carries control requests/events, TCP 5051 carries files, TCP 5052 carri
 ## Implemented scope
 
 - Unique username/password accounts, optional display names, salted scrypt verification and one session per account.
-- Online presence and a Home option to include registered offline people.
+- People directory with All/Online tabs and name/username search, independent of shared groups.
+- Persistent public profiles with editable display name, bio, picture and banner color. Usernames remain fixed. Existing accounts gain default profiles automatically.
 - Persistent private text, accepted for registered offline recipients. Recipients retrieve saved recent history after login. No delivery/read receipts or automatic retry of uncertain writes.
 - Public or reusable-password groups with persistent membership, create/join/leave and authorized history. No admin roles or nested channels.
 - File/image/video/audio attachments up to 20 MiB with session checks, bounded transfer and SHA-256 verification. Private uploads require an online recipient.
@@ -21,13 +22,13 @@ TCP 5050 carries control requests/events, TCP 5051 carries files, TCP 5052 carri
 
 ## Interface
 
-A permanent navigation rail contains Home, joined groups, Create and Browse. Home/private context shows private conversations; a selected group replaces the context sidebar with group information and members. The main panel contains people or chat history and its composer. Calls use a separate dialog. Discord is visual inspiration only.
+A permanent navigation rail contains Home, joined groups, Create and Browse. Home/private context shows private conversations; a selected group replaces the context sidebar with group information and members. The main panel contains people or chat history and its composer. The scrollable rail uses 52px group buttons; context lists scroll above a compact account card. Click the account card to edit your profile or sign out. People and message avatars open user profiles; group members can open a profile and start a private conversation. Calls use a separate dialog. Discord is visual inspiration only.
 
 ## Persistence and limits
 
 Keep the selected runtime directory to retain accounts, memberships, messages and attachment files. Session tokens, connections and calls are memory-only. History returns up to 50 recent messages within a 48,000-byte JSON budget; complete archive pagination is outside scope. The server must be available to accept messages.
 
-Transport is plaintext: no TLS, end-to-end encryption, cloud synchronization or production-security claim. Use demonstration credentials and data. Dedicated emoji/GIF tooling remains an unmerged experiment. Source execution is the verified distribution; standalone packaging and cross-platform call quality are not certified.
+Transport is plaintext: no TLS, end-to-end encryption, cloud synchronization or production-security claim. Use demonstration credentials and data. A local Unicode emoji picker is included; GIF-viewer tooling remains an unmerged experiment. Source execution is the verified distribution; standalone packaging and cross-platform call quality are not certified.
 
 ## Verification and presentation
 
