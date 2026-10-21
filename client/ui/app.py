@@ -1,7 +1,7 @@
 """Chatters real desktop client. UI operations are asynchronous network requests."""
 
 import sys
-import tempfile, uuid
+import tempfile, uuid, wave
 from pathlib import Path
 from datetime import datetime
 from threading import Thread
@@ -76,6 +76,7 @@ class DiscoveryBridge(QObject):
     found = Signal(object)
     work_done = Signal(object, object, object)
     progress = Signal(str)
+    voice_status = Signal(str, str)
 
 
 class Window(QMainWindow):
@@ -87,6 +88,7 @@ class Window(QMainWindow):
         self.histories = {}
         self.unread = {}
         self.state = dict(people=[], groups=[], conversations=[], online=[])
+        self.include_offline = False
         self.session = 0
         self.history_serial = 0
         self.pending_sends = set()
@@ -107,6 +109,10 @@ class Window(QMainWindow):
         self.transferring = False
         self.recording_busy = False
         self.transfer_error = ""
+        self.active_voice = None
+        self.voice_cards = {}
+        self.voice_statuses = {}
+        self.discovery.voice_status.connect(self.update_voice_status)
         self.login_screen()
 
     def background(self, task, done):
@@ -129,6 +135,7 @@ class Window(QMainWindow):
             self.feedback.setText(text)
 
     def login_screen(self):
+        self.voice_cards.clear()
         self.session += 1
         self.target = None
         root = QWidget()
@@ -475,13 +482,14 @@ class Window(QMainWindow):
         self.side.addWidget(button("Sign out", self.sign_out, "nav"))
         if self.target and hasattr(self, "send_button"):
             person = self.person(self.target)
-            enabled = bool(group or person and person["id"] in self.state["online"])
+            enabled = bool(group or person)
             self.send_button.setEnabled(
                 enabled and self.target not in self.pending_sends
             )
             self.composer.setEnabled(enabled)
 
     def show_home(self):
+        self.voice_cards.clear()
         self.stash_draft()
         self.target = None
         self.navigation()
@@ -491,21 +499,30 @@ class Window(QMainWindow):
         search = QLineEdit()
         search.setPlaceholderText("Find someone…")
         self.main.addWidget(search)
-        people = [p for p in self.state["people"] if p["id"] in self.state["online"]]
-        if not people:
-            self.main.addWidget(
-                label(
-                    "No one else is online yet. Ask a teammate to connect.",
-                    "muted",
-                    True,
-                )
-            )
+        include_offline = QCheckBox("Include offline people")
+        include_offline.setChecked(self.include_offline)
+        self.main.addWidget(include_offline)
+        people = sorted(
+            self.state["people"],
+            key=lambda p: (p["id"] not in self.state["online"], p["display_name"].lower()),
+        )
+        cards = []
+        empty = label(
+            "No other accounts yet. Ask a teammate to register." if not people else
+            "No matching people. Try another search or include offline people.",
+            "muted", True,
+        )
+        self.main.addWidget(empty)
         for person in people:
             card = QFrame()
             card.setObjectName("card")
             row = QHBoxLayout(card)
             row.addWidget(label(person["display_name"], "brand"), 1)
-            row.addWidget(label("@" + person["username"], "muted"))
+            online = person["id"] in self.state["online"]
+            row.addWidget(label(
+                "@" + person["username"] + (" · Online" if online else " · Offline"),
+                "muted",
+            ))
             row.addWidget(
                 button(
                     "Message →",
@@ -513,17 +530,29 @@ class Window(QMainWindow):
                 )
             )
             self.main.addWidget(card)
-            search.textChanged.connect(
-                lambda text, c=card, p=person: c.setVisible(
-                    text.lower() in (p["display_name"] + p["username"]).lower()
-                )
-            )
+            cards.append((card, person))
+
+        def filter_people():
+            self.include_offline = include_offline.isChecked()
+            text = search.text().lower()
+            any_visible = False
+            for card, person in cards:
+                matches = text in (person["display_name"] + person["username"]).lower()
+                visible = self.include_offline or person["id"] in self.state["online"]
+                card.setVisible(matches and visible)
+                any_visible = any_visible or matches and visible
+            empty.setVisible(not any_visible)
+
+        search.textChanged.connect(filter_people)
+        include_offline.toggled.connect(filter_people)
+        filter_people()
         self.main.addStretch()
         self.main.addWidget(
             label("Use + to create a group, or ⌕ to browse groups.", "muted", True)
         )
 
     def show_chat(self, target):
+        self.voice_cards.clear()
         self.stash_draft()
         self.target = target
         self.unread.pop(target, None)
@@ -544,7 +573,11 @@ class Window(QMainWindow):
                 head.addWidget(b)
         self.main.addLayout(head)
         self.main.addWidget(
-            label("Group history" if group else "Private conversation", "muted")
+            label(
+                "Group history" if group else
+                "Private conversation · Server stores text while the recipient is offline",
+                "muted", True,
+            )
         )
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -609,6 +642,7 @@ class Window(QMainWindow):
         stick = bar.maximum() - bar.value() < 30
         old = bar.value()
         clear(self.message_layout)
+        self.voice_cards.clear()
         if not rows:
             self.message_layout.addWidget(
                 label("This is the start of your conversation.", "muted", True)
@@ -628,25 +662,19 @@ class Window(QMainWindow):
             except ValueError:
                 stamp = message["created"]
             body.addWidget(label(message["sender"] + "  ·  " + stamp, "muted"))
-            text = label(message["body"], wrap=True)
-            text.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            body.addWidget(text)
-            if message.get("attachment"):
-                name = message.get("attachment_name") or "attachment"
-                body.addWidget(
-                    button(
-                        "Save " + (name if len(name) <= 45 else name[:42] + "…") + "…",
-                        lambda checked=False,
-                        f=message["attachment"],
-                        n=name: self.save_attachment(f, n),
-                    )
-                )
-                if name.startswith("chatters-voice-") and name.endswith(".wav"):
+            name = message.get("attachment_name") or "attachment"
+            voice = bool(message.get("attachment")) and name.startswith("chatters-voice-") and name.endswith(".wav")
+            if voice:
+                body.addWidget(self.voice_message_card(message["attachment"]), 0, Qt.AlignLeft)
+            else:
+                text = label(message["body"], wrap=True)
+                text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                body.addWidget(text)
+                if message.get("attachment"):
                     body.addWidget(
                         button(
-                            "Play voice message",
-                            lambda checked=False,
-                            f=message["attachment"]: self.play_voice(f),
+                            "Save " + (name if len(name) <= 45 else name[:42] + "…") + "…",
+                            lambda checked=False, f=message["attachment"], n=name: self.save_attachment(f, n),
                         )
                     )
             layout.addLayout(body, 1)
@@ -655,6 +683,38 @@ class Window(QMainWindow):
         QTimer.singleShot(
             0, self.scroll, lambda: bar.setValue(bar.maximum() if stick else old)
         )
+
+    def voice_message_card(self, file_id):
+        card = QFrame()
+        card.setObjectName("voiceMessage")
+        card.setFixedWidth(360)
+        row = QHBoxLayout(card)
+        row.setContentsMargins(12, 10, 12, 10)
+        row.setSpacing(12)
+        play_button = button("▶", lambda: self.play_voice(file_id), "voicePlay", "Play voice message")
+        play_button.setAccessibleName("Play voice message")
+        play_button.setFixedSize(40, 40)
+        play_button.setEnabled(self.active_voice is None)
+        row.addWidget(play_button)
+        details = QVBoxLayout()
+        details.setSpacing(3)
+        details.addWidget(label("Voice message", "voiceTitle"))
+        status = label(self.voice_statuses.get(file_id, "Audio recording"), "muted")
+        details.addWidget(status)
+        row.addLayout(details, 1)
+        save = button("↓", lambda: self.save_attachment(file_id, "voice-message.wav"), "voiceSave", "Save voice message")
+        save.setAccessibleName("Save voice message")
+        save.setFixedSize(32, 32)
+        row.addWidget(save)
+        self.voice_cards[file_id] = (play_button, status)
+        return card
+
+    def update_voice_status(self, file_id, text):
+        self.voice_statuses[file_id] = text
+        for current, (play_button, status) in self.voice_cards.items():
+            play_button.setEnabled(self.active_voice is None)
+            if current == file_id:
+                status.setText(text)
 
     def send(self):
         target = self.target
@@ -899,7 +959,7 @@ class Window(QMainWindow):
         )
 
     def play_voice(self, file_id):
-        if self.call_window and not self.call_window.ending or self.recording_busy:
+        if self.active_voice or self.call_window and not self.call_window.ending or self.recording_busy:
             return
         host, port, token = (
             self.adapter.host,
@@ -910,19 +970,31 @@ class Window(QMainWindow):
             "chatters-play-" + uuid.uuid4().hex + ".wav"
         )
 
+        session = self.session
+        self.active_voice = file_id
+        self.update_voice_status(file_id, "Loading audio…")
+
         def task():
             try:
                 files.download(host, port, token, file_id, path)
+                with wave.open(str(path), "rb") as source:
+                    seconds = round(source.getnframes() / source.getframerate())
+                duration = f"{seconds // 60}:{seconds % 60:02}"
+                self.discovery.voice_status.emit(file_id, "Playing · " + duration)
                 play(path)
+                return duration
             finally:
                 path.unlink(missing_ok=True)
 
-        self.background(
-            task,
-            lambda result, error: QMessageBox.warning(self, "Playback failed", error)
-            if error
-            else None,
-        )
+        def finished(duration, error):
+            self.active_voice = None
+            if session != self.session:
+                return
+            self.update_voice_status(file_id, "Could not play · Try again" if error else duration + " · Audio recording")
+            if error:
+                QMessageBox.warning(self, "Playback failed", error)
+
+        self.background(task, finished)
 
     def record_voice(self):
         if self.recording_busy or self.transferring:
@@ -1037,6 +1109,8 @@ class Window(QMainWindow):
         self.drafts.clear()
         self.histories.clear()
         self.unread.clear()
+        self.voice_cards.clear()
+        self.voice_statuses.clear()
         self.state = dict(people=[], groups=[], conversations=[], online=[])
         self.login_screen()
 

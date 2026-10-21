@@ -1,6 +1,6 @@
 # Chatters
 
-Python/PySide6 desktop LAN chat. One server owns accounts, groups, history and attachments. Clients connect with usernames; no browser is involved. The former local demo has been removed.
+Python/PySide6 desktop LAN chat. One server owns accounts, groups, history and attachments. Clients connect with usernames; no browser is involved.
 
 ## Setup
 
@@ -14,11 +14,12 @@ source .venv-live/bin/activate
 On Windows PowerShell:
 
 ```powershell
-py -3.12 -m venv .venv-live
-.venv-live\Scripts\Activate.ps1
+py -3.12 -m venv .venv-windows
+.\.venv-windows\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv-windows\Scripts\python.exe run.py
 ```
 
-Then install:
+On Linux/macOS, with the environment activated, install:
 
 ```sh
 python -m pip install -r requirements.txt
@@ -46,11 +47,11 @@ python run.py
 
 Click Find LAN server or enter the server's local address, such as `192.168.1.10:5050`, and Connect. `127.0.0.1:5050` works only when client and server run on the same computer. Register a unique account or log in. Registration also signs in. One active connection per account is allowed, so use a different account on each demonstration client.
 
-Home lists other connected app users. Select someone to start a private conversation. Enter sends; Shift+Enter creates a new line. Direct sending requires an online recipient. Existing conversations/history remain visible after people disconnect.
+Home lists other connected app users. Select someone to start a private conversation. Enter sends; Shift+Enter creates a new line. Private text is saved even when the registered recipient is offline; they can open the conversation after login to retrieve recent history. Select Include offline people on Home to start such a conversation. Files and live calls still require an online recipient. Existing conversations/history remain visible after people disconnect.
 
 Use + in the rail to create a group and the browse button to join one. Protected groups have a reusable shared password. Membership and groups survive restarts. New members can read saved group history; leaving revokes access. There are no admin roles.
 
-Use + beside the message input to send a file up to 20 MiB. Save attachment downloads and verifies a file; nothing executes automatically. Record creates a voice message of up to 60 seconds; Stop and send uploads it, Cancel discards it. Play voice message downloads/plays that recording. Voice/video calls are one-to-one; accept/reject from the incoming prompt, mute/end in the call window. Use headphones. Other pairs may call independently.
+Use + beside the message input to send a file up to 20 MiB. Save attachment downloads and verifies a file; nothing executes automatically. Record creates a voice message of up to 60 seconds; Stop and send uploads it, Cancel discards it. Recordings appear as compact voice cards: Play downloads/plays the audio, and the download arrow saves it as voice-message.wav. Playback status and duration appear after loading. Voice/video calls are one-to-one; accept/reject from the incoming prompt, mute/end in the call window. Use headphones. Other pairs may call independently.
 
 A server acknowledgement means saved/accepted, not read by the recipient. After a timeout/disconnect the outcome of a pending write can be uncertain: reconnect, log in and inspect history before retrying. Clients do not silently replay messages. No cloud service, TLS or end-to-end encryption is implemented; use demonstration credentials, not personal reused passwords.
 
@@ -68,3 +69,28 @@ Read run_server.py → listener.py → connection.py for the server and run.py �
 ## Verification limits
 
 Local tests exercise four real TCP clients, authentication/access failures, persistent text/groups, binary transfers, two simultaneous call pairs with synthetic media packets, discovery, and two real offscreen Qt clients. Local hardware checks also opened microphone/speaker, recorded/played a short sample, captured a camera frame, and exercised the actual media workers through the local relay. Audio was muted during call tests to avoid feedback; no captured content was retained. This is not evidence of four physical laptops or acceptable end-to-end call sound/video quality. Verify those on the actual demonstration setup before submission. Device-specific failures are shown in the UI; do not claim unavailable media works.
+
+## Repository layout
+
+- `run.py`: desktop client entry point; imports the interface from `client/ui/app.py`.
+- `run_server.py`: server entry point.
+- `client/ui/`: windows, voice cards, call dialog and QSS styling.
+- `client/network/`: adapter, control connection, discovery and file-transfer client.
+- `client/media/`: audio, video, recording and media transport.
+- `server/transport/`: listeners, client handlers, session registry and discovery.
+- `server/services/`: authentication, messages, groups, files and call coordination.
+- `server/storage/`: SQLite worker and data operations.
+- `shared/`: framing and request validation used by both programs.
+- `docs/`: current project scope, protocol and team reading guide.
+
+`__init__.py` marks a Python package; some also expose imports such as AccountStore. `__pycache__/` contains automatically generated bytecode, is ignored by Git, and may reappear after running Python. Runtime data, virtual environments, recordings, tests and screenshots are not committed.
+
+### Windows audio setup check
+
+Install dependencies on every computer running a client, using the same interpreter that launches it. From the project directory:
+
+```powershell
+.\.venv-windows\Scripts\python.exe -c "import sounddevice, cv2; print(sounddevice.query_devices())"
+```
+
+If this fails, correct that client environment before testing LAN calls. Allow microphone/camera access. Text chat uses TCP 5050; files use 5051; live media uses 5052. A working text connection does not verify file/media reachability.

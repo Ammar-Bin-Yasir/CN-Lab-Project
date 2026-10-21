@@ -7,6 +7,7 @@ from server.transport.discovery import DiscoveryServer
 
 def main():
     parser = argparse.ArgumentParser(description="Chatters LAN server")
+
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=5050)
     parser.add_argument("--data", default="runtime")
@@ -15,7 +16,9 @@ def main():
     args = parser.parse_args()
     if not 0 <= args.port <= 65533:
         parser.error("Choose a port from 1 to 65533, or 0 for automatic allocation.")
+
     logging.basicConfig(level=logging.INFO)
+
     try:
         server = ChatServer(args.host, args.port, args.data).start()
     except (OSError, sqlite3.Error) as error:

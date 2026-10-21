@@ -5,9 +5,6 @@ from server.storage.conversations import target_parts
 
 def send(server, connection, payload):
     user = connection.profile["id"]
-    kind, number = target_parts(payload.get("target"))
-    if kind == "user" and not server.registry.get(number):
-        raise ValueError("Recipient is offline. Message was not accepted.")
     # No client-selected sender or attachment identity is accepted here.
     message = server.store.operation(
         "save_message",

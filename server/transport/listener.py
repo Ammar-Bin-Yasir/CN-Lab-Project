@@ -1,4 +1,4 @@
-"""TCP accept loop and orderly worker shutdown."""
+"""manages the server resources and the arrival of clients."""
 
 import socket
 from threading import Thread, Lock, Event
@@ -55,12 +55,14 @@ class ChatServer:
 
     def serve(self):
         while not self.stopping.is_set():
+
             try:
                 sock, _ = self.sock.accept()
             except socket.timeout:
                 continue
             except OSError:
                 break
+
             connection = Connection(self, sock)
             worker = Thread(target=connection.run, name="chatters-client")
             with self.lock:

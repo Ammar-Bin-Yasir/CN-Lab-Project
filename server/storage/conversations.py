@@ -20,6 +20,7 @@ def target_parts(target):
         r"(user|group):[1-9][0-9]{0,15}", target
     ):
         raise ValueError("Invalid conversation target.")
+
     kind, number = target.split(":")
     return kind, int(number)
 

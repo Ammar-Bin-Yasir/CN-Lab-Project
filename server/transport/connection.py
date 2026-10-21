@@ -35,6 +35,7 @@ class Connection:
             return auth.authenticate(self.server, self, kind, payload)
         if not self.profile:
             raise ValueError("Please sign in first.")
+
         user = self.profile["id"]
         if kind == "ping":
             return {}

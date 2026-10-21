@@ -27,3 +27,11 @@ QScrollBar:vertical { background: transparent; width: 8px; }
 QScrollBar::handle:vertical { background: #555562; border-radius: 4px; min-height: 30px; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QToolTip { color: #eeeeff; background: #30313b; border: 1px solid #555562; padding: 5px; }
+
+QFrame#voiceMessage { background: #2b2939; border: 1px solid #413b58; border-radius: 14px; }
+QLabel#voiceTitle { font-size: 14px; font-weight: 600; }
+QPushButton#voicePlay { color: #181322; font-size: 17px; background: #9a87ef; border-radius: 20px; padding: 0; text-align: center; }
+QPushButton#voicePlay:hover { background: #b3a1ff; }
+QPushButton#voicePlay:disabled { color: #c3b8d2; background: #514765; }
+QPushButton#voiceSave { color: #c8c0e0; font-size: 22px; text-align: center; background: transparent; padding: 4px; border-radius: 8px; }
+QPushButton#voiceSave:hover { background: #413b58; }

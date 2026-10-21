@@ -3,9 +3,10 @@
 import json
 import struct
 
+# 64 KiB maximum JSON body
 MAX_FRAME = 65536
 
-
+# Keep receiving until we have exactly the requested number of bytes.
 def receive_exact(sock, length):
     chunks = bytearray()
     while len(chunks) < length:
@@ -15,7 +16,7 @@ def receive_exact(sock, length):
         chunks.extend(data)
     return bytes(chunks)
 
-
+# Encode a Python message and transmit its length followed by its body.
 def send_frame(sock, message):
     body = json.dumps(message, ensure_ascii=False, allow_nan=False).encode("utf-8")
     if not 0 < len(body) <= MAX_FRAME:
