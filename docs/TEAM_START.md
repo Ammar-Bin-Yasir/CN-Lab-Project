@@ -9,6 +9,8 @@ This is the current implementation guide. Start the server with `python run_serv
 | Ashna-Simi-Butt | Private/group text and access rules | server/services/messaging.py and groups.py; server/storage/conversations.py with Ammar |
 | Ayesha Zulqarnain | File transfers | client/network/files.py, server/services/files.py; server/storage/attachments.py with Ammar |
 
+For the profile feature, Ammar should also read client/ui/profiles.py and server/storage/profiles.py. The GUI prepares the picture and sends a request; the authenticated connection determines ownership; the existing database worker persists it and a refresh event updates other clients.
+
 Each member should trace a successful request and a rejected request, identify which thread executes each step, and explain sender/session authorization. Database records persist; socket connections and session tokens do not. A saved acknowledgement is not a read receipt.
 
 ## Demonstration

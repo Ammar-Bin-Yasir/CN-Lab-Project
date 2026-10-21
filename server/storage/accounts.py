@@ -86,6 +86,9 @@ class AccountStore:
             from .attachments import initialize as initialize_files
 
             initialize_files(db)
+            from .profiles import initialize as initialize_profiles
+
+            initialize_profiles(db)
             # Same-cost verification for unknown usernames; never persist this record.
             dummy_salt = secrets.token_bytes(16)
             dummy_hash = _password_hash("unused-dummy-password", dummy_salt)
@@ -108,6 +111,10 @@ class AccountStore:
                         result = self._register(db, *args)
                     elif operation == "authenticate":
                         result = self._authenticate(db, dummy_salt, dummy_hash, *args)
+                    elif operation.startswith("profile_"):
+                        from .profiles import dispatch
+
+                        result = dispatch(db, operation, *args)
                     elif operation.startswith("file_"):
                         from .attachments import dispatch
 
@@ -116,6 +123,12 @@ class AccountStore:
                         from .conversations import dispatch
 
                         result = dispatch(db, operation, *args)
+                        from .profiles import metadata
+
+                        if operation == "snapshot":
+                            metadata(db, result["people"])
+                        elif operation == "members":
+                            metadata(db, result)
                 except Exception as error:
                     future.set_exception(error)
                 else:

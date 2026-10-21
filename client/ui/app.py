@@ -7,7 +7,9 @@ from datetime import datetime
 from threading import Thread
 from client.network import files
 from client.media.recording import Recorder, play
+from client.ui.profiles import Profiles, ProfileDialog
 from client.ui.call_window import CallWindow
+from client.ui.emojis import EmojiPicker, configure_emoji_text
 from PySide6.QtCore import Qt, Signal, QTimer, QObject
 from PySide6.QtWidgets import (
     QApplication,
@@ -62,6 +64,10 @@ def clear(layout):
 class Composer(QTextEdit):
     submitted = Signal()
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        configure_emoji_text(self)
+
     def keyPressEvent(self, event):
         if (
             event.key() in (Qt.Key_Return, Qt.Key_Enter)
@@ -88,7 +94,10 @@ class Window(QMainWindow):
         self.histories = {}
         self.unread = {}
         self.state = dict(people=[], groups=[], conversations=[], online=[])
-        self.include_offline = False
+        self.include_offline = True
+        self.people_search = ""
+        self.profiles = Profiles(self)
+        self.navigation_serial = 0
         self.session = 0
         self.history_serial = 0
         self.pending_sends = set()
@@ -271,8 +280,16 @@ class Window(QMainWindow):
             self.adapter.file_port = data["file_port"]
             self.adapter.media_port = data["media_port"]
             self.password.clear()
+            self.profiles.cache.clear()
+            self.profiles.waiting.clear()
             self.shell()
             self.refresh()
+            session = self.session
+            def own_profile(ok, profile):
+                if ok and session == self.session and self.adapter.profile:
+                    self.adapter.profile = profile
+                    self.navigation()
+            self.adapter.request("profile_get", {}, own_profile)
 
         self.adapter.request("register" if register else "login", payload, result)
 
@@ -283,14 +300,23 @@ class Window(QMainWindow):
         row.setSpacing(0)
         rail = QWidget()
         rail.setObjectName("rail")
-        rail.setFixedWidth(78)
-        self.rail = QVBoxLayout(rail)
-        self.rail.setContentsMargins(12, 20, 12, 16)
+        rail.setFixedWidth(80)
+        rail_outer = QVBoxLayout(rail)
+        rail_outer.setContentsMargins(0, 0, 0, 0)
+        rail_scroll = QScrollArea()
+        rail_scroll.setWidgetResizable(True)
+        rail_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        rail_content = QWidget()
+        self.rail = QVBoxLayout(rail_content)
+        self.rail.setContentsMargins(12, 16, 12, 16)
+        self.rail.setSpacing(12)
+        rail_scroll.setWidget(rail_content)
+        rail_outer.addWidget(rail_scroll)
         side = QWidget()
         side.setObjectName("sidebar")
-        side.setFixedWidth(242)
+        side.setFixedWidth(250)
         self.side = QVBoxLayout(side)
-        self.side.setContentsMargins(18, 22, 18, 18)
+        self.side.setContentsMargins(12, 20, 12, 12)
         main = QWidget()
         main.setObjectName("main")
         self.main = QVBoxLayout(main)
@@ -331,7 +357,13 @@ class Window(QMainWindow):
                 else:
                     self.navigation()
             else:
+                focused = QApplication.focusWidget()
+                search_focused = focused is getattr(self, "people_search_input", None)
+                cursor = focused.cursorPosition() if search_focused else 0
                 self.show_home()
+                if search_focused:
+                    self.people_search_input.setFocus()
+                    self.people_search_input.setCursorPosition(cursor)
 
             if on_complete:
                 on_complete()
@@ -374,7 +406,7 @@ class Window(QMainWindow):
                 elif data["state"] == "ended":
                     self.call_window.shutdown(data.get("reason", "Call ended"))
         elif kind == "refresh":
-            self.refresh()
+            self.refresh(self.load_history if data.get("profile_id") and self.target else None)
         elif kind == "message_received":
             target = data["target"]
             if target == self.target:
@@ -402,91 +434,126 @@ class Window(QMainWindow):
         if self.target and hasattr(self, "composer"):
             self.drafts[self.target] = self.composer.toPlainText()
 
+    def open_profile(self, user_id):
+        session = self.session
+        def opened(data):
+            if session != self.session or not self.adapter.profile:
+                return
+            dialog = ProfileDialog(self, data)
+            self.adapter.disconnected.connect(dialog.reject)
+            dialog.exec()
+            try:
+                self.adapter.disconnected.disconnect(dialog.reject)
+            except RuntimeError:
+                pass
+            dialog.deleteLater()
+        self.request("profile_get", {"user_id": user_id}, opened)
+
+    def person_row(self, person, action, selected=False, compact=False):
+        card = QFrame()
+        card.setObjectName("selectedPerson" if selected else "personRow")
+        row = QHBoxLayout(card)
+        row.setContentsMargins(8, 8, 8, 8)
+        row.setSpacing(10)
+        row.addWidget(self.profiles.avatar(person, 34 if compact else 42))
+        name = button(person["display_name"], action, "personName")
+        name.setMinimumWidth(0)
+        name.setToolTip(person["display_name"] + " · @" + person["username"])
+        from PySide6.QtGui import QFontMetrics
+        name.setText(QFontMetrics(name.font()).elidedText(person["display_name"], Qt.ElideRight, 135 if compact else 260))
+        column = QVBoxLayout()
+        column.setSpacing(0)
+        column.addWidget(name)
+        online = person["id"] in self.state["online"]
+        status = ("Online" if online else "Offline")
+        if not compact:
+            status = "@" + person["username"] + " · " + status
+        column.addWidget(label(status, "onlineStatus" if online else "muted"))
+        row.addLayout(column, 1)
+        return card
+
     def navigation(self):
+        self.navigation_serial += 1
+        serial = self.navigation_serial
         clear(self.rail)
         clear(self.side)
-        self.rail.addWidget(button("C", self.show_home, "railButton", "Home"))
+        def tile(text, action, title, selected=False):
+            item = button(text, action, "railButton", title)
+            item.setFixedSize(52, 52)
+            item.setCheckable(True)
+            item.setChecked(selected)
+            item.setAccessibleName(title)
+            self.rail.addWidget(item, 0, Qt.AlignHCenter)
+        tile("C", self.show_home, "Home · People and direct messages", not self.group(self.target))
+        divider = QFrame(); divider.setObjectName("divider"); divider.setFixedHeight(1)
+        self.rail.addWidget(divider)
         for group in self.state["groups"]:
             if group["joined"]:
                 target = f"group:{group['id']}"
                 count = self.unread.get(target, 0)
-                self.rail.addWidget(
-                    button(
-                        group["name"][:2].upper() + (" •" if count else ""),
-                        lambda checked=False, t=target: self.show_chat(t),
-                        "railButton",
-                        group["name"],
-                    )
-                )
-        self.rail.addWidget(
-            button("+", self.create_group, "railButton", "Create group")
-        )
-        self.rail.addWidget(
-            button("⌕", self.browse_groups, "railButton", "Browse groups")
-        )
+                tile(group["name"][:2].upper() + (" •" if count else ""),
+                     lambda checked=False, t=target: self.show_chat(t),
+                     group["name"] + (f" · {count} unread" if count else ""), self.target == target)
+        tile("+", self.create_group, "Create a group")
+        tile("Join", self.browse_groups, "Browse and join groups")
         self.rail.addStretch()
-        self.rail.addWidget(label("LAN", "muted"))
         group = self.group(self.target)
+        self.side.addWidget(label(group["name"] if group else "Chatters", "brand", True))
+        self.side.addWidget(button("People", self.show_home, "nav", "Find anyone on this server"))
+        self.side.addWidget(button("Browse groups", self.browse_groups, "nav"))
+        self.side.addWidget(label("GROUP MEMBERS" if group else "DIRECT MESSAGES", "sectionLabel"))
+        scroll = QScrollArea(); scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        content = QWidget(); items = QVBoxLayout(content)
+        items.setContentsMargins(0, 0, 0, 0); items.setSpacing(2)
+        scroll.setWidget(content); self.side.addWidget(scroll, 1)
         if group:
-            self.side.addWidget(label(group["name"], "brand", True))
-            self.side.addWidget(
-                label(
-                    "Protected group" if group["protected"] else "Public group", "muted"
-                )
-            )
-            self.side.addWidget(label("MEMBERS", "muted"))
-            self.member_box = QVBoxLayout()
-            self.side.addLayout(self.member_box)
-            current = self.target
-            session = self.session
-
+            self.member_box = items
+            current, session = self.target, self.session
             def members(data):
-                if self.target != current or self.session != session:
+                if self.target != current or self.session != session or serial != self.navigation_serial:
                     return
-                clear(self.member_box)
-                for p in data:
-                    self.member_box.addWidget(
-                        label(
-                            p["display_name"]
-                            + (
-                                " · Online"
-                                if p["id"] in self.state["online"]
-                                else " · Offline"
-                            ),
-                            "muted",
-                            True,
-                        )
-                    )
-
+                for person in sorted(data, key=lambda p: (p["id"] not in self.state["online"], p["display_name"].lower())):
+                    items.addWidget(self.person_row(person, lambda checked=False, p=person: self.open_profile(p["id"]), compact=True))
+                items.addStretch()
             self.request("members", {"target": current}, members)
-            self.side.addStretch()
-            self.side.addWidget(button("Leave group", self.leave_group))
+            self.side.addWidget(label("Password protected" if group["protected"] else "Public group", "muted"))
+            self.side.addWidget(button("Leave group", self.leave_group, "nav"))
         else:
-            self.side.addWidget(label("chatters", "brand"))
-            self.side.addWidget(button("Online people", self.show_home, "nav"))
-            self.side.addWidget(label("PRIVATE CONVERSATIONS", "muted"))
-            for target in self.state["conversations"]:
+            peers = [t for t in self.state["conversations"] if self.person(t)]
+            if self.target and self.person(self.target) and self.target not in peers:
+                peers.insert(0, self.target)
+            for target in peers:
                 person = self.person(target)
-                if person:
-                    count = self.unread.get(target, 0)
-                    self.side.addWidget(
-                        button(
-                            person["display_name"] + (f" ({count})" if count else ""),
-                            lambda checked=False, t=target: self.show_chat(t),
-                            "nav",
-                        )
-                    )
-            self.side.addStretch()
-        self.side.addWidget(label(self.adapter.profile["display_name"], wrap=True))
-        self.side.addWidget(label("Connected to " + self.adapter.host, "muted", True))
-        self.side.addWidget(button("Sign out", self.sign_out, "nav"))
+                card = self.person_row(person, lambda checked=False, t=target: self.show_chat(t), target == self.target, True)
+                if self.unread.get(target):
+                    card.layout().addWidget(label(str(self.unread[target]), "unread"))
+                items.addWidget(card)
+            if not peers:
+                items.addWidget(label("Start a conversation from People. Your chats will appear here.", "muted", True))
+            items.addStretch()
+        account = QFrame(); account.setObjectName("accountCard")
+        row = QHBoxLayout(account); row.setContentsMargins(8, 10, 8, 10)
+        profile = self.adapter.profile
+        row.addWidget(self.profiles.avatar(profile, 36))
+        name = button(profile["display_name"][:18], lambda: self.open_profile(profile["id"]), "personName", "My profile and account")
+        column = QVBoxLayout(); column.setSpacing(0); column.addWidget(name); column.addWidget(label("Online", "onlineStatus"))
+        row.addLayout(column, 1)
+        self.side.addWidget(account)
         if self.target and hasattr(self, "send_button"):
             person = self.person(self.target)
+            if person and hasattr(self, "chat_title"):
+                self.chat_title.setText(person["display_name"])
+                if self.header_avatar_key != (person["id"], person.get("avatar_version", "")):
+                    clear(self.header_avatar_box)
+                    self.header_avatar_box.addWidget(self.profiles.avatar(person, 40))
+                    self.header_avatar_key = (person["id"], person.get("avatar_version", ""))
             enabled = bool(group or person)
-            self.send_button.setEnabled(
-                enabled and self.target not in self.pending_sends
-            )
+            self.send_button.setEnabled(enabled and self.target not in self.pending_sends)
             self.composer.setEnabled(enabled)
+            for call_button in getattr(self, "call_buttons", []):
+                person = self.person(self.target)
+                call_button.setEnabled(bool(person and person["id"] in self.state["online"]))
 
     def show_home(self):
         self.voice_cards.clear()
@@ -494,62 +561,46 @@ class Window(QMainWindow):
         self.target = None
         self.navigation()
         clear(self.main)
-        self.main.addWidget(label("Your people, right here.", "title"))
-        self.main.addWidget(label("People connected to this Chatters server", "muted"))
-        search = QLineEdit()
-        search.setPlaceholderText("Find someone…")
-        self.main.addWidget(search)
-        include_offline = QCheckBox("Include offline people")
-        include_offline.setChecked(self.include_offline)
-        self.main.addWidget(include_offline)
-        people = sorted(
-            self.state["people"],
-            key=lambda p: (p["id"] not in self.state["online"], p["display_name"].lower()),
-        )
+        header = QHBoxLayout()
+        header.addWidget(label("People", "title"))
+        for title, all_people in (("Online", False), ("All", True)):
+            tab = button(title, lambda checked=False, value=all_people: self.people_tab(value), "tab")
+            tab.setCheckable(True); tab.setChecked(self.include_offline == all_people)
+            header.addWidget(tab)
+        header.addStretch()
+        self.main.addLayout(header)
+        self.main.addWidget(label("Everyone on this server. No shared group needed to start a conversation.", "muted", True))
+        search = QLineEdit(self.people_search)
+        self.people_search_input = search
+        search.setPlaceholderText("Find someone by name or username")
+        search.setAccessibleName("Search people"); self.main.addWidget(search)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True)
+        content = QWidget(); people_layout = QVBoxLayout(content)
+        people_layout.setContentsMargins(0, 4, 0, 0); people_layout.setSpacing(2)
+        scroll.setWidget(content); self.main.addWidget(scroll, 1)
+        count = label("", "sectionLabel"); people_layout.addWidget(count)
         cards = []
-        empty = label(
-            "No other accounts yet. Ask a teammate to register." if not people else
-            "No matching people. Try another search or include offline people.",
-            "muted", True,
-        )
-        self.main.addWidget(empty)
-        for person in people:
-            card = QFrame()
-            card.setObjectName("card")
-            row = QHBoxLayout(card)
-            row.addWidget(label(person["display_name"], "brand"), 1)
-            online = person["id"] in self.state["online"]
-            row.addWidget(label(
-                "@" + person["username"] + (" · Online" if online else " · Offline"),
-                "muted",
-            ))
-            row.addWidget(
-                button(
-                    "Message →",
-                    lambda checked=False, p=person: self.show_chat(f"user:{p['id']}"),
-                )
-            )
-            self.main.addWidget(card)
-            cards.append((card, person))
-
+        for person in sorted(self.state["people"], key=lambda p: (p["id"] not in self.state["online"], p["display_name"].lower())):
+            card = self.person_row(person, lambda checked=False, p=person: self.open_profile(p["id"]))
+            card.layout().addWidget(button("Message", lambda checked=False, p=person: self.show_chat(f"user:{p['id']}")))
+            people_layout.addWidget(card); cards.append((card, person))
+        empty = label("No people found. Try All or a different search. New accounts appear here when they register.", "muted", True)
+        people_layout.addWidget(empty); people_layout.addStretch()
         def filter_people():
-            self.include_offline = include_offline.isChecked()
-            text = search.text().lower()
-            any_visible = False
+            self.people_search = search.text()
+            query = self.people_search.casefold()
+            visible = 0
             for card, person in cards:
-                matches = text in (person["display_name"] + person["username"]).lower()
-                visible = self.include_offline or person["id"] in self.state["online"]
-                card.setVisible(matches and visible)
-                any_visible = any_visible or matches and visible
-            empty.setVisible(not any_visible)
-
+                show = (self.include_offline or person["id"] in self.state["online"]) and query in (person["display_name"] + person["username"]).casefold()
+                card.setVisible(show); visible += bool(show)
+            count.setText(("ALL PEOPLE" if self.include_offline else "ONLINE") + f" — {visible}")
+            empty.setVisible(not visible)
         search.textChanged.connect(filter_people)
-        include_offline.toggled.connect(filter_people)
         filter_people()
-        self.main.addStretch()
-        self.main.addWidget(
-            label("Use + to create a group, or ⌕ to browse groups.", "muted", True)
-        )
+
+    def people_tab(self, include_offline):
+        self.include_offline = include_offline
+        self.show_home()
 
     def show_chat(self, target):
         self.voice_cards.clear()
@@ -563,19 +614,27 @@ class Window(QMainWindow):
             return
         clear(self.main)
         head = QHBoxLayout()
-        head.addWidget(
-            label(group["name"] if group else person["display_name"], "title"), 1
-        )
+        self.call_buttons = []
+        self.header_avatar_box = QHBoxLayout()
+        self.header_avatar_key = None
         if person:
+            self.header_avatar_box.addWidget(self.profiles.avatar(person, 40))
+            self.header_avatar_key = (person["id"], person.get("avatar_version", ""))
+            head.addLayout(self.header_avatar_box)
+        self.chat_title = label(group["name"] if group else person["display_name"], "title", True)
+        head.addWidget(self.chat_title, 1)
+        if person:
+            head.addWidget(button("Profile", lambda: self.open_profile(person["id"]), "nav"))
             for text, mode in (("Voice call", "voice"), ("Video call", "video")):
                 b = button(text, lambda checked=False, m=mode: self.start_call(m))
                 b.setEnabled(person["id"] in self.state["online"])
                 head.addWidget(b)
+                self.call_buttons.append(b)
         self.main.addLayout(head)
         self.main.addWidget(
             label(
-                "Group history" if group else
-                "Private conversation · Server stores text while the recipient is offline",
+                "One group. One conversation." if group else
+                "Private conversation · Messages are saved even when someone is offline",
                 "muted", True,
             )
         )
@@ -590,6 +649,7 @@ class Window(QMainWindow):
         row = QHBoxLayout()
         self.attach_button = button("+", self.attach_file, tip="Attach file")
         row.addWidget(self.attach_button)
+        row.addWidget(button("Emoji", self.pick_emoji, tip="Insert an emoji"))
         row.addWidget(
             button(
                 "Record",
@@ -649,9 +709,9 @@ class Window(QMainWindow):
             )
         for message in rows:
             layout = QHBoxLayout()
-            layout.addWidget(
-                label(message["sender"][:1].upper(), "brand"), 0, Qt.AlignTop
-            )
+            sender = self.adapter.profile if message["sender_id"] == self.adapter.profile["id"] else self.person(f"user:{message['sender_id']}")
+            sender = sender or dict(id=message["sender_id"], display_name=message["sender"], username="")
+            layout.addWidget(self.profiles.avatar(sender, 36), 0, Qt.AlignTop)
             body = QVBoxLayout()
             try:
                 stamp = (
@@ -669,6 +729,7 @@ class Window(QMainWindow):
             else:
                 text = label(message["body"], wrap=True)
                 text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                configure_emoji_text(text)
                 body.addWidget(text)
                 if message.get("attachment"):
                     body.addWidget(
@@ -856,6 +917,22 @@ class Window(QMainWindow):
                 dict(target=self.target),
                 lambda data: (self.show_home(), self.refresh()),
             )
+
+    def pick_emoji(self):
+        if not self.target or not self.adapter.profile:
+            return
+        session, target, composer = self.session, self.target, self.composer
+        dialog = EmojiPicker(self)
+        self.adapter.disconnected.connect(dialog.reject)
+        try:
+            accepted = dialog.exec() == QDialog.Accepted
+            if (accepted and self.session == session and self.target == target
+                    and self.composer is composer and self.adapter.profile):
+                composer.insertPlainText(dialog.selected)
+                composer.setFocus()
+        finally:
+            self.adapter.disconnected.disconnect(dialog.reject)
+            dialog.deleteLater()
 
     def attach_file(self):
         if self.transferring:

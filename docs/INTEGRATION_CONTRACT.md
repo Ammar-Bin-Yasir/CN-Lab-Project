@@ -8,6 +8,8 @@ The shared/protocol.py control format is: four-byte big-endian length, UTF-8 JSO
 |---|---|---|
 | register | username, display_name, password | profile {id,username,display_name}, token, file_port, media_port; signs in |
 | login | username,password | same authentication result |
+| profile_get | optional user_id integer; omitted means current account | full public profile |
+| profile_update | display_name, bio, color, avatar | updated current-account profile |
 | ping | {} | {} |
 | snapshot | {} | people public profiles, groups {id,name,protected,joined}, conversations target strings, online user IDs |
 | create_group | name,password (empty means public) | target |
@@ -39,3 +41,11 @@ The pinned dependencies installed successfully into .venv-live after a transient
 
 ### Offline private text
 Private text accepts registered recipients regardless of presence. Storage validates the recipient and commits before acknowledgement. Online recipients receive the normal live event; offline recipients retrieve recent history after login through snapshot conversations and history. No delivery/read receipt, automatic replay or unlimited-history synchronization is added. The existing latest-50/48,000-byte history limit applies. Private file uploads and live calls still require online recipients.
+
+### Public profiles
+
+Both profile operations require authentication. A full profile contains id, username, display_name, bio, color, avatar and avatar_version. Profile updates always use the authenticated account ID, ignoring client-supplied identity. Send all editable fields: missing bio/avatar default to empty and color to #5865f2. Display names contain 1–64 characters, bios at most 280, and banner colors use six hexadecimal digits. Usernames cannot be edited. A successful update broadcasts refresh with profile_id; clients update current chat presentation without discarding the composer draft.
+
+Profile pictures are center-cropped and resized by the desktop to 96×96 RGB PNG. Input images are limited to 5 MiB and 4096 pixels per dimension. The server accepts an empty avatar to remove it, or Base64 PNG bounded to 44,000 encoded characters / 32,768 decoded bytes; it validates structure, checksum, dimensions and bounded decompression. avatar_version is a truncated SHA-256 content digest. Snapshots and member lists add only color and avatar_version; clients fetch pictures on demand and retain at most 128 profile cache entries. This keeps picture bytes out of presence snapshots.
+
+A profiles table is created additively in the existing SQLite database. Names remain in users; profile details share the same worker and update transaction. Existing accounts, memberships, messages and files are retained. Both server and clients need this version for profile requests.
