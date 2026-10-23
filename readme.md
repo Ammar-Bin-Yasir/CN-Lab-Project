@@ -35,9 +35,9 @@ On one computer, from the repository root:
 python run_server.py
 ```
 
-Defaults: TCP 5050 for chat, TCP 5051 for file transfers, TCP 5052 for calls, UDP 5051 for discovery. TCP and UDP may share a port number. Allow these ports in the host firewall for the demonstration LAN. Devices need to reach one another; some campus/guest Wi-Fi isolates clients. If needed use a trusted hotspot/router that allows local traffic.
+Defaults: TCP 5050 for chat, TCP 5051 for file transfers, TCP 5052 for call-session setup/lifetime, UDP 5052 for live audio/video, and UDP 5051 for discovery. TCP and UDP may share a port number. Allow these ports in the host firewall for the demonstration LAN. Devices need to reach one another; some campus/guest Wi-Fi isolates clients. If needed use a trusted hotspot/router that allows local traffic.
 
-Server options: `--host 0.0.0.0 --port 5050 --data runtime`. Media/files use the next two TCP ports. `--no-discovery` disables UDP advertising. Stop with Ctrl+C. Accounts and history remain under the selected data directory; attachment files live under its files/ folder. Back up the entire directory together, not just SQLite. Use a fresh data directory for a clean demonstration.
+Server options: `--host 0.0.0.0 --port 5050 --data runtime`. Files use the next TCP port; calls use the second next port over both TCP and UDP. `--no-discovery` disables UDP advertising. Stop with Ctrl+C. Accounts and history remain under the selected data directory; attachment files live under its files/ folder. Back up the entire directory together, not just SQLite. Use a fresh data directory for a clean demonstration.
 
 ## Start each client
 
@@ -47,11 +47,11 @@ python run.py
 
 Click Find LAN server or enter the server's local address, such as `192.168.1.10:5050`, and Connect. `127.0.0.1:5050` works only when client and server run on the same computer. Register a unique account or log in. Registration also signs in. One active connection per account is allowed, so use a different account on each demonstration client.
 
-Home lists other connected app users. Select someone to start a private conversation. Enter sends; Shift+Enter creates a new line. Private text is saved even when the registered recipient is offline; they can open the conversation after login to retrieve recent history. Select Include offline people on Home to start such a conversation. Files and live calls still require an online recipient. Existing conversations/history remain visible after people disconnect.
+Home lists other connected app users. Select someone to start a private conversation. Enter sends; Shift+Enter creates a new line. Private text is saved even when the registered recipient is offline; they can open the conversation after login to retrieve recent history. Select All on the People screen to start such a conversation. Files and live calls still require an online recipient. Existing conversations/history remain visible after people disconnect.
 
 Use + in the rail to create a group and the browse button to join one. Protected groups have a reusable shared password. Membership and groups survive restarts. New members can read saved group history; leaving revokes access. There are no admin roles.
 
-Use Emoji beside the composer to choose a Unicode emoji. It inserts at the cursor or replaces selected text; it does not send automatically. Emojis travel and persist as normal text in private/group messages, including offline private text. You can also paste emojis. Appearance depends on installed fonts; Linux uses a monochrome fallback (Noto Emoji or Symbola) for Qt color-font compatibility while preserving the original characters. GIF-viewer tooling remains on the separate experimental branch.
+Use Emoji beside the composer to choose a Unicode emoji. It inserts at the cursor or replaces selected text; it does not send automatically. Emojis travel and persist as normal text in private/group messages, including offline private text. You can also paste emojis. Linux uses the bundled color emoji font; monochrome is used only if that font cannot load. Windows/macOS keep native emoji rendering. GIF-viewer tooling remains on the separate experimental branch.
 
 Use + beside the message input to send a file up to 20 MiB. Save attachment downloads and verifies a file; nothing executes automatically. Record creates a voice message of up to 60 seconds; Stop and send uploads it, Cancel discards it. Recordings appear as compact voice cards: Play downloads/plays the audio, and the download arrow saves it as voice-message.wav. Playback status and duration appear after loading. Voice/video calls are one-to-one; accept/reject from the incoming prompt, mute/end in the call window. Use headphones. Other pairs may call independently.
 
@@ -82,7 +82,7 @@ Local tests exercise four real TCP clients, authentication/access failures, pers
 - `server/transport/`: listeners, client handlers, session registry and discovery.
 - `server/services/`: authentication, messages, groups, files and call coordination.
 - `server/storage/`: SQLite worker and data operations.
-- `shared/`: framing and request validation used by both programs.
+- `shared/`: control framing/request validation and the UDP media packet codec used by both programs.
 - `docs/`: current project scope, protocol and team reading guide.
 
 `__init__.py` marks a Python package; some also expose imports such as AccountStore. `__pycache__/` contains automatically generated bytecode, is ignored by Git, and may reappear after running Python. Runtime data, virtual environments, recordings, tests and screenshots are not committed.
@@ -95,4 +95,16 @@ Install dependencies on every computer running a client, using the same interpre
 .\.venv-windows\Scripts\python.exe -c "import sounddevice, cv2; print(sounddevice.query_devices())"
 ```
 
-If this fails, correct that client environment before testing LAN calls. Allow microphone/camera access. Text chat uses TCP 5050; files use 5051; live media uses 5052. A working text connection does not verify file/media reachability.
+If this fails, correct that client environment before testing LAN calls. Allow microphone/camera access. Text chat uses TCP 5050; files use 5051; call setup uses TCP 5052 and live media uses UDP 5052. Allow both protocols on the server firewall. A working text connection does not verify file/media reachability.
+
+## UDP calls
+
+Update the server and every client together: this media protocol is incompatible with the previous TCP-media version. Call request/accept/end still use TCP chat control. A separate TCP session on the media port authenticates the participant and issues fresh, memory-only UDP credentials; it remains open to detect disconnects. Live samples and JPEG fragments travel only over UDP through the server. Recorded voice messages and files still use TCP.
+
+Datagrams are at most 1,200 bytes. Audio has a small 60 ms playout buffer; missing/late blocks become silence. JPEG frames are split into numbered fragments; incomplete frames expire after 350 ms. Signed packets, replay checks, endpoint binding, bounded reassembly and per-sender relay rate limits restrict malformed traffic. UDP registration/heartbeats detect unreachable media and lost connections. No lost media is retransmitted. This is a custom LAN media protocol, not RTP/WebRTC; no adaptive bitrate, audio compression, echo cancellation or congestion control is implemented.
+
+Signatures authenticate packets using credentials exchanged over plaintext TCP. They do not provide encryption or protection from someone intercepting that exchange. Use this on a trusted LAN with demonstration data. Separate-device audible quality and Windows firewall/device behaviour still need a LAN rehearsal.
+
+## Emoji font
+
+Linux clients bundle the unmodified Noto Color Emoji bitmap font from [Google Noto Emoji v2.047](https://github.com/googlefonts/noto-emoji/tree/v2.047/fonts), licensed under the SIL Open Font License 1.1 (client/ui/assets/OFL.txt). It avoids blank COLRv1 glyphs on affected Qt builds. Windows/macOS retain native emoji fonts. Keep the assets folder when distributing the source; no font download or system installation is needed at runtime.

@@ -1,11 +1,9 @@
 """Independent call pairs and authenticated bounded media relay."""
 
-import socket, struct, uuid, time
+import socket, uuid, time, secrets
 from threading import Lock, Thread, Event
-from queue import Queue, Full, Empty
-from shared.protocol import send_frame, receive_frame, receive_exact
-
-MAX_PACKET = 262144
+from shared.protocol import send_frame, receive_frame
+from shared.media import Codec, HEADER, HELLO, VIDEO, MAX_DATAGRAM
 
 
 class CallService:
@@ -15,6 +13,7 @@ class CallService:
         self.calls = {}
         self.reserved = {}
         self.channels = {}
+        self.identities = {}
         self.stop = Event()
         self.workers = {}
         self.worker_lock = Lock()
@@ -24,6 +23,16 @@ class CallService:
         self.sock.listen(16)
         self.sock.settimeout(0.5)
         self.port = self.sock.getsockname()[1]
+        self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            self.udp.bind((host, self.port))
+            self.udp.settimeout(0.2)
+        except Exception:
+            self.udp.close()
+            self.sock.close()
+            raise
+        self.udp_thread = Thread(target=self.relay, name="chatters-udp-relay")
+        self.udp_thread.start()
         self.thread = Thread(target=self.run, name="chatters-call-relay")
         self.thread.start()
 
@@ -103,6 +112,7 @@ class CallService:
                     self.reserved.pop(user, None)
                 channel = self.channels.pop((call_id, user), None)
                 if channel:
+                    self.identities.pop(channel["codec"].identity, None)
                     channels.append(channel)
         for channel in channels:
             try:
@@ -134,10 +144,13 @@ class CallService:
                         c["state"] == "active"
                         and now - c["active_at"] > 20
                         and not all(
-                            (c["id"], u) in self.channels
+                            self.channels.get((c["id"], u), {}).get("address")
                             for u in (c["caller"], c["recipient"])
                         )
                     )
+                    or any(now - ch["last_seen"] > 10
+                           for (cid, _), ch in self.channels.items()
+                           if cid == c["id"] and ch["address"] is not None)
                 ]
             for call_id in expired:
                 self.end(call_id, "Call timed out")
@@ -161,87 +174,117 @@ class CallService:
     def channel(self, sock):
         call_id = None
         claimed = False
-        done = Event()
-        writer = None
         try:
             request = receive_frame(sock)
             session = self.server.registry.by_token(request.get("token"))
-            if not session:
-                raise ValueError("Invalid session.")
+            if not session or request.get("transport") != "udp-v1":
+                raise ValueError("Invalid session or media transport.")
             user = session.profile["id"]
             call_id = request.get("call_id")
             with self.lock:
                 call = self.calls.get(call_id)
                 if (
-                    not call
-                    or call["state"] != "active"
+                    not call or call["state"] != "active"
                     or user not in (call["caller"], call["recipient"])
                     or (call_id, user) in self.channels
                 ):
                     raise ValueError("Media channel is not authorized.")
                 peer = call["recipient"] if user == call["caller"] else call["caller"]
-                channel = {"sock": sock, "queue": Queue(maxsize=16)}
+                codec = Codec(secrets.token_bytes(16), secrets.token_bytes(32), server=True)
+                channel = dict(sock=sock, codec=codec, call_id=call_id, peer=peer,
+                               ip=sock.getpeername()[0], address=None,
+                               video=call["mode"] == "video", last_seen=time.monotonic(),
+                               budget=128000., budget_at=time.monotonic(), ack_at=-1.)
                 self.channels[(call_id, user)] = channel
+                self.identities[codec.identity] = channel
                 claimed = True
-                video = call["mode"] == "video"
-            send_frame(
-                sock, {"ok": True, "payload": {"sample_rate": 16000, "blocksize": 320}}
-            )
-
-            def send_loop():
+            send_frame(sock, {"ok": True, "payload": dict(
+                transport="udp-v1", udp_port=self.port, identity=codec.identity.hex(),
+                key=codec.key.hex(), sample_rate=16000, blocksize=320,
+            )})
+            # TCP stays open only for authenticated lifetime/teardown, never media.
+            sock.settimeout(0.5)
+            while not self.stop.is_set():
                 try:
-                    while not done.is_set():
-                        try:
-                            packet = channel["queue"].get(timeout=0.2)
-                        except Empty:
-                            continue
-                        sock.sendall(struct.pack("!I", len(packet)) + packet)
-                except OSError:
-                    done.set()
-                    try:
-                        sock.shutdown(2)
-                    except OSError:
-                        pass
-
-            writer = Thread(target=send_loop, name="chatters-media-writer")
-            writer.start()
-            while not done.is_set():
-                length = struct.unpack("!I", receive_exact(sock, 4))[0]
-                if not 1 < length <= MAX_PACKET:
-                    raise ValueError("Invalid media packet.")
-                packet = receive_exact(sock, length)
-                if packet[0] == 1:
-                    if len(packet) != 641:
-                        raise ValueError("Invalid audio block.")
-                elif packet[0] != 2 or not video:
-                    raise ValueError("Invalid media type.")
-                with self.lock:
-                    destination = self.channels.get((call_id, peer))
-                if destination:
-                    try:
-                        destination["queue"].put_nowait(packet)
-                    except Full:
-                        pass  # Drop rather than accumulating live-media delay.
-        except (OSError, EOFError, ValueError):
+                    sock.recv(1)
+                    break
+                except socket.timeout:
+                    continue
+        except (OSError, EOFError, ValueError, TypeError):
             pass
         finally:
-            done.set()
             try:
                 sock.shutdown(2)
             except OSError:
                 pass
             sock.close()
-            if writer:
-                writer.join(2)
             if claimed:
-                self.end(call_id, "Media channel closed")
+                self.end(call_id, "Media session closed")
             with self.worker_lock:
                 self.workers.pop(sock, None)
+
+    def relay(self):
+        while not self.stop.is_set():
+            try:
+                data, address = self.udp.recvfrom(MAX_DATAGRAM + 1)
+            except socket.timeout:
+                continue
+            except OSError:
+                if self.stop.is_set():
+                    break
+                continue
+            if not HEADER.size + 16 <= len(data) <= MAX_DATAGRAM:
+                continue
+            identity = data[4:20]
+            with self.lock:
+                channel = self.identities.get(identity)
+                if not channel or channel["ip"] != address[0]:
+                    continue
+                if channel["address"] is not None and channel["address"] != address:
+                    continue
+                now = time.monotonic()
+                channel["budget"] = min(128000., channel["budget"] +
+                                         (now - channel["budget_at"]) * 512000)
+                channel["budget_at"] = now
+                if channel["budget"] < len(data):
+                    continue
+                channel["budget"] -= len(data)
+                try:
+                    packet = channel["codec"].decode(data)
+                except ValueError:
+                    continue
+                kind, frame, stamp, index, count, payload = packet
+                if kind == VIDEO and not channel["video"]:
+                    continue
+                if channel["address"] is None:
+                    if kind != HELLO:
+                        continue
+                    channel["address"] = address
+                channel["last_seen"] = now
+                destination = None
+                outgoing = None
+                if kind == HELLO:
+                    if now - channel["ack_at"] >= 0.3:
+                        channel["ack_at"] = now
+                        outgoing = channel["codec"].encode(HELLO)
+                        destination = address
+                else:
+                    peer = self.channels.get((channel["call_id"], channel["peer"]))
+                    if peer and peer["address"]:
+                        outgoing = peer["codec"].encode(kind, frame, stamp, index, count, payload)
+                        destination = peer["address"]
+            if outgoing is not None:
+                try:
+                    self.udp.sendto(outgoing, destination)
+                except OSError:
+                    pass  # A dropped datagram must not terminate other calls.
 
     def close(self):
         self.stop.set()
         self.sock.close()
+        self.udp.close()
         self.thread.join(2)
+        self.udp_thread.join(2)
         with self.lock:
             ids = list(self.calls)
         for call_id in ids:

@@ -40,7 +40,7 @@ QPushButton#voicePlay:hover { background: #b3a1ff; }
 QPushButton#voicePlay:disabled { color: #c3b8d2; background: #514765; }
 QPushButton#voiceSave { color: #c8c0e0; font-size: 22px; text-align: center; background: transparent; padding: 4px; border-radius: 8px; }
 QPushButton#voiceSave:hover { background: #413b58; }
-QPushButton#emojiChoice { text-align: center; font-size: 22px; padding: 4px; font-family: 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Emoji', 'Symbola', sans-serif; }
+QPushButton#emojiChoice { text-align: center; font-size: 22px; padding: 4px; font-family: 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', 'Noto Emoji', 'Symbola', sans-serif; }
 QLabel#sectionLabel { color: #a5a5b0; font-size: 11px; font-weight: 600; padding-top: 14px; padding-bottom: 8px; }
 QLabel#onlineStatus { color: #73c99a; font-size: 12px; }
 QLabel#unread { background: #5865f2; border-radius: 8px; padding: 3px; }
@@ -57,3 +57,44 @@ QPushButton#avatar { background: transparent; padding: 0; border: none; }
 QPushButton#avatar:focus { border: 2px solid #8891ff; border-radius: 16px; }
 QPushButton#tab { background: transparent; padding: 7px 16px; }
 QPushButton#tab:checked { background: #35353d; }
+
+/* Task surfaces: fixed footers, readable hierarchy, and explicit call states. */
+QDialog#taskDialog, QDialog#profileDialog { background: #1e1f24; }
+QFrame#dialogFooter { background: #18191d; border-top: 1px solid #303138; }
+QLabel#dialogDescription { color: #b8b9c4; }
+QLabel#fieldLabel { color: #ededf2; font-weight: 600; }
+QLabel#profileName { font-size: 20px; font-weight: 700; }
+QFrame#groupRow { background: #25262c; border-radius: 12px; }
+QFrame#groupRow:hover { background: #2c2d35; }
+QPushButton#dangerText { color: #ffaaaa; background: transparent; }
+QPushButton#dangerText:hover { background: #43272c; }
+QPushButton#danger { background: #bd3546; color: white; font-weight: 600; text-align: center; }
+QPushButton#danger:hover { background: #d44053; }
+QPushButton#primary:disabled { background: #383e75; color: #bfc2db; }
+QDialog#callDialog { background: #111216; }
+QLabel#callStage { background: #1c1e25; border-radius: 16px; color: #b8b9c4; }
+QLabel#localVideo { background: #292c36; border: 2px solid #444854; border-radius: 12px; color: #b8b9c4; }
+QLabel#callName { font-size: 26px; font-weight: 600; }
+QPushButton#microphone { text-align: center; background: #30333e; }
+QPushButton#microphone:checked { background: #f0d8dc; color: #672432; }
+QPushButton#microphone:disabled { color: #8b8c9b; background: #25262d; }
+QCheckBox { spacing: 10px; padding: 6px 0; }
+QCheckBox::indicator { width: 18px; height: 18px; border: 1px solid #747682; border-radius: 4px; background: #131316; }
+QCheckBox::indicator:checked { background: #5865f2; border: 4px solid #aeb5ff; }
+QCheckBox:focus { color: #b9bfff; }
+
+QDialog QLineEdit { placeholder-text-color: #a5a5b0; }
+QPushButton#dialogClose { background: #25262c; border: none; border-radius: 8px; padding: 6px; }
+QPushButton#dialogClose:hover { background: #3b3d46; }
+QPushButton#dialogClose:focus { border: 1px solid #aeb5ff; }
+QLabel#profileBanner { border: none; border-radius: 0; }
+QFrame#profileAvatarRing { background: #1e1f24; border-radius: 48px; }
+
+/* Shared attachments read as content in the message, with one clear save action. */
+QFrame#attachmentCard { background: #25262c; border-radius: 12px; }
+QLabel#attachmentMedia { background: #15161b; color: #b8b9c4; border-top-left-radius: 12px; border-top-right-radius: 12px; }
+QLabel#attachmentBadge { background: #363b59; color: #dbe0ff; border-radius: 9px; font-size: 11px; font-weight: 700; }
+QLabel#attachmentName { color: #f0f0f4; font-weight: 600; }
+QPushButton#attachmentPlay, QPushButton#attachmentSave { background: #393b47; text-align: center; padding: 8px 12px; }
+QPushButton#attachmentPlay:hover, QPushButton#attachmentSave:hover { background: #4b506c; }
+QPushButton#attachmentPlay:disabled { background: #30313a; color: #999ba8; }

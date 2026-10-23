@@ -2,11 +2,14 @@
 
 from PySide6.QtCore import Signal, QTimer, Qt
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
+from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QWidget, QSizePolicy
 from client.media.calls import MediaCall
+from client.ui.dialogs import TaskDialog, text, action
+from client.ui.modal import InAppDialog, close_button
+from client.ui.profiles import avatar_icon
 
 
-class CallWindow(QDialog):
+class CallWindow(InAppDialog):
     media_event = Signal(str, object)
     finished_call = Signal(str)
 
@@ -18,26 +21,64 @@ class CallWindow(QDialog):
         self.ending = False
         self.seconds = 0
         self.setWindowTitle(title)
-        self.resize(620, 480 if info["mode"] == "video" else 220)
+        self.setObjectName('callDialog')
+        video = info['mode'] == 'video'
+        self.resize(720 if video else 440, 560 if video else 420)
         layout = QVBoxLayout(self)
-        self.status = QLabel("Ringing…")
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+        top = QHBoxLayout()
+        spacer = QWidget()
+        spacer.setFixedWidth(32)
+        top.addWidget(spacer)
+        top.addStretch()
+        heading = text(title, 'callName')
+        heading.setAlignment(Qt.AlignCenter)
+        self.draggable(heading)
+        top.addWidget(heading)
+        top.addStretch()
+        top.addWidget(close_button(self))
+        layout.addLayout(top)
+        self.status = text('Ringing…', 'dialogDescription')
+        self.status.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.status)
-        self.remote = QLabel("Waiting for video")
+        self.remote = QLabel('Waiting for their camera…')
+        self.remote.setObjectName('callStage')
         self.remote.setAlignment(Qt.AlignCenter)
         self.remote.setMinimumSize(320, 240)
-        self.local = QLabel()
-        self.local.setFixedSize(160, 120)
-        if info["mode"] == "video":
-            layout.addWidget(self.remote)
-            layout.addWidget(self.local)
+        self.remote.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.local = QLabel('Your camera')
+        self.local.setAlignment(Qt.AlignCenter)
+        self.local.setObjectName('localVideo')
+        self.local.setFixedSize(144, 108)
+        if video:
+            stage = QWidget()
+            grid = QGridLayout(stage)
+            grid.setContentsMargins(0, 0, 0, 0)
+            grid.addWidget(self.remote, 0, 0)
+            grid.addWidget(self.local, 0, 0, Qt.AlignBottom | Qt.AlignRight)
+            layout.addWidget(stage, 1)
+        else:
+            portrait = QLabel()
+            portrait.setAlignment(Qt.AlignCenter)
+            portrait.setPixmap(avatar_icon({'display_name': title}, 104).pixmap(104, 104))
+            layout.addStretch()
+            layout.addWidget(portrait, 0, Qt.AlignCenter)
+            layout.addWidget(text('Voice call', 'muted'), 0, Qt.AlignCenter)
+            layout.addStretch()
         row = QHBoxLayout()
-        self.mute_button = QPushButton("Mute microphone")
+        row.setSpacing(12)
+        row.addStretch()
+        self.mute_button = QPushButton('Mute microphone')
+        self.mute_button.setObjectName('microphone')
+        self.mute_button.setAutoDefault(False)
         self.mute_button.setCheckable(True)
+        self.mute_button.setEnabled(False)
         self.mute_button.toggled.connect(self.mute)
         row.addWidget(self.mute_button)
-        end = QPushButton("End call")
-        end.clicked.connect(self.close)
-        row.addWidget(end)
+        self.end_button = action('End call', self.close, 'danger')
+        row.addWidget(self.end_button)
+        row.addStretch()
         layout.addLayout(row)
         self.media_event.connect(self.on_media, Qt.QueuedConnection)
         self.timer = QTimer(self)
@@ -72,7 +113,8 @@ class CallWindow(QDialog):
         if self.ending:
             return
         if kind == "active":
-            self.status.setText("Media connected")
+            self.status.setText("Connected · 00:00")
+            self.mute_button.setEnabled(True)
             self.timer.start(1000)
         elif kind in ("local_video", "remote_video"):
             pixmap = QPixmap()
@@ -97,11 +139,16 @@ class CallWindow(QDialog):
             return
         self.ending = True
         self.timer.stop()
+        self.mute_button.setEnabled(False)
+        self.end_button.setText("Close")
         if self.media:
             self.media.close()
         if not self.status.text().startswith("Media failed"):
             self.status.setText(reason)
         self.finished_call.emit(self.info["id"])
+
+    def reject(self):
+        self.close()
 
     def closeEvent(self, event):
         if not self.ending:
@@ -110,3 +157,16 @@ class CallWindow(QDialog):
             )
         self.shutdown()
         event.accept()
+
+
+class IncomingCall(TaskDialog):
+    def __init__(self, parent, info):
+        super().__init__(parent, 'Incoming ' + info['mode'] + ' call',
+            info.get('caller_name', 'Someone') + ' is calling.')
+        portrait = QLabel()
+        portrait.setPixmap(avatar_icon({'display_name': info.get('caller_name', '?')}, 88).pixmap(88, 88))
+        self.body.addWidget(portrait, 0, Qt.AlignCenter)
+        self.body.addStretch()
+        self.footer.addStretch()
+        self.footer.addWidget(action('Decline', self.reject, 'danger'))
+        self.footer.addWidget(action('Accept call', self.accept, 'primary'))
