@@ -3,11 +3,12 @@ import base64
 from collections import OrderedDict
 from pathlib import Path
 import weakref
-from PySide6.QtCore import Qt, QSize, QByteArray, QBuffer, QIODevice
+from PySide6.QtCore import Qt, QSize, QByteArray, QBuffer, QIODevice, Signal
 from PySide6.QtGui import QPixmap, QPainter, QPainterPath, QColor, QIcon, QImage, QImageReader, QColorSpace
-from PySide6.QtWidgets import (QPushButton, QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-    QLineEdit, QTextEdit, QFileDialog, QColorDialog, QScrollArea, QWidget)
+from PySide6.QtWidgets import (QPushButton, QVBoxLayout, QHBoxLayout, QLabel,
+    QLineEdit, QTextEdit, QFileDialog, QColorDialog, QScrollArea, QWidget, QFrame)
 from shiboken6 import isValid
+from client.ui.modal import InAppDialog, close_button
 
 
 def text_label(text, name=''):
@@ -91,69 +92,140 @@ class Profiles:
         return item
 
 
-class ProfileDialog(QDialog):
+class ProfileHeader(QWidget):
+    resized = Signal()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.resized.emit()
+
+
+class ProfileDialog(InAppDialog):
     def __init__(self, window, profile):
         super().__init__(window)
         self.window, self.profile = window, dict(profile)
         self.own = profile['id'] == window.adapter.profile['id']
         self.setWindowTitle('My profile' if self.own else 'User profile')
-        self.setFixedWidth(440)
+        self.setObjectName('profileDialog')
+        self.resize(480, min(720 if self.own else 540, window.screen().availableGeometry().height() - 80))
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         content = QWidget()
-        layout = QVBoxLayout(content)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
         scroll.setWidget(content)
-        outer.addWidget(scroll)
-        available = window.screen().availableGeometry().height()
-        self.resize(440, min(720 if self.own else 550, max(360, available - 100)))
-        self.setMaximumHeight(max(360, available - 80))
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(14)
-        self.banner = QLabel()
-        self.banner.setFixedHeight(70)
-        layout.addWidget(self.banner)
+        outer.addWidget(scroll, 1)
+        self.header = ProfileHeader()
+        header_layout = QVBoxLayout(self.header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(0)
+        self.banner = QLabel(self.header)
+        self.banner.setObjectName('profileBanner')
+        self.banner.setFixedHeight(120)
+        header_layout.addWidget(self.banner)
+        self.draggable(self.banner)
+        self.dismiss = close_button(self, self.header)
+        self.avatar_ring = QFrame(self.header)
+        self.avatar_ring.setObjectName('profileAvatarRing')
+        self.avatar_ring.setFixedSize(96, 96)
         self.picture = QPushButton()
         self.picture.setObjectName('avatar')
-        self.picture.setFixedSize(80, 80)
-        self.picture.setIconSize(QSize(80, 80))
+        self.picture.setParent(self.avatar_ring)
+        self.picture.setFixedSize(88, 88)
+        self.picture.setIconSize(QSize(88, 88))
+        self.picture.move(4, 4)
         self.picture.setAccessibleName('Profile picture')
         self.picture.setFocusPolicy(Qt.NoFocus)
-        layout.addWidget(self.picture)
-        self.preview()
-        layout.addWidget(text_label('@' + profile['username'], 'muted'))
+        identity = QWidget()
+        identity_layout = QVBoxLayout(identity)
+        identity_layout.setContentsMargins(28, 52, 28, 18)
+        identity_layout.setSpacing(5)
+        identity_layout.addWidget(text_label(profile['display_name'], 'profileName'))
+        identity_layout.addWidget(text_label('@' + profile['username'], 'muted'))
         online = profile['id'] in window.state['online']
-        layout.addWidget(text_label('Online' if online else 'Offline', 'muted'))
+        identity_layout.addWidget(text_label('Online' if online else 'Offline', 'onlineStatus' if online else 'muted'))
+        header_layout.addWidget(identity)
+        content_layout.addWidget(self.header)
+        self.header.resized.connect(self.position_header_controls)
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(28, 8, 28, 28)
+        layout.setSpacing(12)
+        content_layout.addWidget(body)
+        self.preview()
         self.error = text_label('', 'error')
+        self.error.setVisible(False)
+        footer = QFrame()
+        footer.setObjectName('dialogFooter')
+        footer_layout = QVBoxLayout(footer)
+        footer_layout.setContentsMargins(24, 16, 24, 16)
+        footer_layout.addWidget(self.error)
+        actions = QHBoxLayout()
+        footer_layout.addLayout(actions)
+        outer.addWidget(footer)
         if self.own:
-            actions = QHBoxLayout()
-            for title, action in [('Change picture', self.choose_picture), ('Remove', self.remove_picture), ('Color', self.choose_color)]:
-                b = QPushButton(title); b.clicked.connect(action); actions.addWidget(b)
-            layout.addLayout(actions)
-            layout.addWidget(text_label('Display name'))
-            self.name = QLineEdit(profile['display_name']); self.name.setMaxLength(64)
+            pictures = QHBoxLayout()
+            for title, callback in [('Change picture', self.choose_picture), ('Remove', self.remove_picture), ('Banner color', self.choose_color)]:
+                item = QPushButton(title); item.setAutoDefault(False)
+                item.clicked.connect(callback); pictures.addWidget(item)
+            layout.addLayout(pictures)
+            layout.addWidget(text_label('Display name', 'fieldLabel'))
+            self.name = QLineEdit(profile['display_name'])
+            self.name.setAccessibleName('Display name'); self.name.setMaxLength(64)
             layout.addWidget(self.name)
-            layout.addWidget(text_label('About me · up to 280 characters'))
-            self.bio = QTextEdit(); self.bio.setPlainText(profile.get('bio', '')); self.bio.setFixedHeight(100)
+            layout.addWidget(text_label('About me', 'fieldLabel'))
+            self.bio = QTextEdit()
+            self.bio.setAcceptRichText(False)
+            self.bio.setAccessibleName('About me')
+            self.bio.setPlaceholderText('Tell people a little about yourself.')
+            self.bio.setPlainText(profile.get('bio', '')); self.bio.setFixedHeight(96)
             layout.addWidget(self.bio)
-            self.save_button = QPushButton('Save changes'); self.save_button.setObjectName('primary')
-            self.save_button.clicked.connect(self.save); layout.addWidget(self.save_button)
+            self.counter = text_label('', 'muted')
+            self.counter.setAlignment(Qt.AlignRight)
+            layout.addWidget(self.counter)
+            self.bio.textChanged.connect(self.update_counter)
+            self.update_counter()
             layout.addWidget(text_label('Connected to ' + window.adapter.host, 'muted'))
-            signout = QPushButton('Sign out'); signout.clicked.connect(self.sign_out); layout.addWidget(signout)
+            signout = QPushButton('Sign out'); signout.setObjectName('dangerText')
+            signout.setAutoDefault(False); signout.clicked.connect(self.sign_out)
+            actions.addWidget(signout)
+            actions.addStretch()
+            cancel = QPushButton('Cancel'); cancel.setAutoDefault(False)
+            cancel.clicked.connect(self.reject); actions.addWidget(cancel)
+            self.save_button = QPushButton('Save changes'); self.save_button.setObjectName('primary')
+            self.save_button.clicked.connect(self.save); actions.addWidget(self.save_button)
         else:
-            layout.addWidget(text_label(profile['display_name'], 'title'))
-            layout.addWidget(text_label('ABOUT ME', 'muted'))
+            layout.addWidget(text_label('About me', 'fieldLabel'))
             layout.addWidget(text_label(profile.get('bio') or 'No bio yet.'))
+            actions.addStretch()
+            close = QPushButton('Close'); close.clicked.connect(self.reject); actions.addWidget(close)
             message = QPushButton('Message'); message.setObjectName('primary')
-            message.clicked.connect(self.message); layout.addWidget(message)
-        layout.addWidget(self.error)
-        close = QPushButton('Close'); close.clicked.connect(self.reject); layout.addWidget(close)
+            message.clicked.connect(self.message); actions.addWidget(message)
+        layout.addStretch()
+
+    def update_counter(self):
+        count = len(self.bio.toPlainText())
+        self.counter.setText(f'{count} / 280')
+        self.counter.setAccessibleName(f'About me: {count} of 280 characters')
+
+    def show_error(self, message):
+        self.error.setText(message)
+        self.error.setVisible(bool(message))
 
     def preview(self):
-        self.picture.setIcon(avatar_icon(self.profile, 80))
-        self.banner.setStyleSheet('background: ' + self.profile.get('color', '#5865f2') + '; border-radius: 12px;')
+        self.picture.setIcon(avatar_icon(self.profile, 88))
+        self.banner.setStyleSheet('background: ' + self.profile.get('color', '#5865f2') + ';')
+
+    def position_header_controls(self):
+        self.dismiss.move(self.header.width() - 48, 16)
+        self.avatar_ring.move(24, 72)
+        self.dismiss.raise_()
+        self.avatar_ring.raise_()
 
     def choose_color(self):
         color = QColorDialog.getColor(QColor(self.profile['color']), self, 'Banner color')
@@ -186,22 +258,29 @@ class ProfileDialog(QDialog):
             if not image.save(buffer, 'PNG') or len(data) > 32768:
                 raise ValueError('Could not prepare this picture.')
             self.profile['avatar'] = base64.b64encode(bytes(data)).decode('ascii')
-            self.preview(); self.error.clear()
+            self.preview(); self.show_error('')
         except (OSError, ValueError) as error:
-            self.error.setText(str(error))
+            self.show_error(str(error))
 
     def save(self):
+        if not self.save_button.isEnabled():
+            return
+        if not self.name.text().strip():
+            self.show_error('Enter a display name.'); self.name.setFocus(); return
         if len(self.bio.toPlainText()) > 280:
-            self.error.setText('Keep your bio within 280 characters.'); return
+            self.show_error('Keep your bio within 280 characters.'); return
         self.save_button.setEnabled(False)
+        self.save_button.setText('Saving…')
+        self.show_error('')
         session = self.window.session
         payload = dict(display_name=self.name.text(), bio=self.bio.toPlainText(), color=self.profile['color'], avatar=self.profile.get('avatar', ''))
         def saved(ok, data):
-            if not isValid(self) or session != self.window.session:
+            if not isValid(self) or not self.isVisible() or session != self.window.session:
                 return
             self.save_button.setEnabled(True)
+            self.save_button.setText('Save changes')
             if not ok:
-                self.error.setText(data.get('message', 'Could not save profile.')); return
+                self.show_error(data.get('message', 'Could not save profile.')); return
             self.window.adapter.profile = data
             self.window.refresh()
             self.accept()

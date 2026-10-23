@@ -1,8 +1,11 @@
 """Local Unicode picker; selected characters use the ordinary text protocol."""
 
+import logging
 import sys
-from PySide6.QtGui import QTextDocument, QTextOption
-from PySide6.QtWidgets import QDialog, QGridLayout, QPushButton, QTextEdit
+from pathlib import Path
+from PySide6.QtGui import QFontDatabase, QTextDocument, QTextOption
+from PySide6.QtWidgets import QGridLayout, QPushButton, QTextEdit, QLabel
+from client.ui.modal import InAppDialog, close_button
 
 EMOJIS = (
     ("😀", "Grinning face"), ("😄", "Smiling face"),
@@ -23,10 +26,30 @@ EMOJIS = (
 )
 
 
-def configure_emoji_text(widget):
+_color_font_id = None
+
+
+def _use_color_emoji():
+    global _color_font_id
     if not sys.platform.startswith("linux"):
-        return
-    # Some Qt/Linux builds cannot draw COLRv1 color glyphs; preserve the text.
+        return True
+    if _color_font_id is None:
+        # This bitmap font works with Linux Qt builds that leave COLRv1 glyphs blank.
+        path = Path(__file__).with_name("assets") / "NotoColorEmoji.ttf"
+        _color_font_id = QFontDatabase.addApplicationFont(str(path))
+        if _color_font_id >= 0:
+            for family in QFontDatabase.applicationFontFamilies(_color_font_id):
+                QFontDatabase.addApplicationEmojiFontFamily(family)
+        else:
+            logging.warning("Color emoji font could not load; using readable text glyphs.")
+    return _color_font_id >= 0
+
+
+def configure_emoji_text(widget):
+    """Prefer color; use monochrome only if the bundled Linux font cannot load."""
+    if _use_color_emoji():
+        return True
+    # Preserve readable Unicode if a damaged/incomplete installation lacks the font.
     widget.setStyleSheet(
         "font-family: 'Inter', 'Segoe UI', 'Noto Sans', 'Noto Emoji', 'Symbola', sans-serif;"
     )
@@ -35,29 +58,37 @@ def configure_emoji_text(widget):
         option = document.defaultTextOption()
         option.setFlags(option.flags() | QTextOption.DisableEmojiParsing)
         document.setDefaultTextOption(option)
+    return False
 
 
-class EmojiPicker(QDialog):
+class EmojiPicker(InAppDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.selected = None
         self.setWindowTitle("Choose an emoji")
+        color_emoji = configure_emoji_text(self)
         grid = QGridLayout(self)
+        heading = QLabel('Choose an emoji')
+        heading.setObjectName('fieldLabel')
+        self.draggable(heading)
+        grid.addWidget(heading, 0, 0, 1, 5)
+        grid.addWidget(close_button(self), 0, 5)
         for index, (emoji, name) in enumerate(EMOJIS):
-            # Only the simple picker glyphs request text presentation on Linux.
-            glyph = emoji.replace("\ufe0f", "") + "\ufe0e" if sys.platform.startswith("linux") else emoji
+            glyph = emoji if color_emoji else emoji.replace("\ufe0f", "") + "\ufe0e"
             item = QPushButton(glyph)
             item.setObjectName("emojiChoice")
+            if not color_emoji:
+                configure_emoji_text(item)
             item.setToolTip(name)
             item.setAccessibleName(name)
             item.setAutoDefault(False)
             item.setMinimumSize(48, 44)
             item.clicked.connect(lambda checked=False, value=emoji: self.choose(value))
-            grid.addWidget(item, index // 6, index % 6)
+            grid.addWidget(item, index // 6 + 1, index % 6)
         cancel = QPushButton("Cancel")
         cancel.setAutoDefault(False)
         cancel.clicked.connect(self.reject)
-        grid.addWidget(cancel, 5, 0, 1, 6)
+        grid.addWidget(cancel, 6, 0, 1, 6)
 
     def choose(self, emoji):
         self.selected = emoji

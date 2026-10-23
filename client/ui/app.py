@@ -8,9 +8,11 @@ from threading import Thread
 from client.network import files
 from client.media.recording import Recorder, play
 from client.ui.profiles import Profiles, ProfileDialog
-from client.ui.call_window import CallWindow
+from client.ui.call_window import CallWindow, IncomingCall
+from client.ui.dialogs import GroupForm, BrowseGroups
+from client.ui.modal import InAppDialog, close_button
 from client.ui.emojis import EmojiPicker, configure_emoji_text
-from PySide6.QtCore import Qt, Signal, QTimer, QObject
+from PySide6.QtCore import Qt, Signal, QTimer, QObject, QPoint, QRect
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -24,13 +26,13 @@ from PySide6.QtWidgets import (
     QFrame,
     QScrollArea,
     QDialog,
-    QCheckBox,
     QMessageBox,
     QInputDialog,
     QFileDialog,
 )
 from client.network.adapter import NetworkAdapter
 from client.network.discovery import discover
+from client.ui.attachments import AttachmentCard, AttachmentPreviews
 
 
 def label(text, style="", wrap=False):
@@ -99,6 +101,8 @@ class Window(QMainWindow):
         self.profiles = Profiles(self)
         self.navigation_serial = 0
         self.session = 0
+        self.previews = AttachmentPreviews(self)
+        self.attachment_cards = []
         self.history_serial = 0
         self.pending_sends = set()
         self.setWindowTitle("Chatters")
@@ -146,6 +150,8 @@ class Window(QMainWindow):
     def login_screen(self):
         self.voice_cards.clear()
         self.session += 1
+        self.previews.reset()
+        self.attachment_cards.clear()
         self.target = None
         root = QWidget()
         row = QHBoxLayout(root)
@@ -379,14 +385,13 @@ class Window(QMainWindow):
                     "reject_call", {"call_id": data["id"]}, lambda *_: None
                 )
                 return
-            accepted = (
-                QMessageBox.question(
-                    self,
-                    "Incoming " + data["mode"] + " call",
-                    data.get("caller_name", "Someone") + " is calling. Accept?",
-                )
-                == QMessageBox.Yes
-            )
+            prompt = IncomingCall(self, data)
+            prompt.call_id = data["id"]
+            self.incoming_prompt = prompt
+            accepted = prompt.exec() == QDialog.Accepted
+            self.incoming_prompt = None
+            if self.call_states.get(data['id'], {}).get('state') == 'ended' or not self.adapter.profile:
+                return
             if accepted:
                 self.make_call_window(data, data.get("caller_name", "Incoming call"))
                 self.request(
@@ -400,6 +405,9 @@ class Window(QMainWindow):
                 )
         elif kind == "call_state":
             self.call_states[data["id"]] = data
+            prompt = getattr(self, 'incoming_prompt', None)
+            if prompt and prompt.call_id == data['id'] and data['state'] == 'ended':
+                prompt.reject()
             if self.call_window and self.call_window.info["id"] == data["id"]:
                 if data["state"] == "active":
                     self.call_window.activate()
@@ -557,6 +565,8 @@ class Window(QMainWindow):
 
     def show_home(self):
         self.voice_cards.clear()
+        self.previews.stop()
+        self.attachment_cards.clear()
         self.stash_draft()
         self.target = None
         self.navigation()
@@ -604,6 +614,8 @@ class Window(QMainWindow):
 
     def show_chat(self, target):
         self.voice_cards.clear()
+        self.previews.stop()
+        self.attachment_cards.clear()
         self.stash_draft()
         self.target = target
         self.unread.pop(target, None)
@@ -643,6 +655,7 @@ class Window(QMainWindow):
         widget = QWidget()
         self.message_layout = QVBoxLayout(widget)
         self.scroll.setWidget(widget)
+        self.scroll.verticalScrollBar().valueChanged.connect(self.load_visible_previews)
         self.main.addWidget(self.scroll, 1)
         self.feedback = label("Loading history…", "muted", True)
         self.main.addWidget(self.feedback)
@@ -698,6 +711,8 @@ class Window(QMainWindow):
         self.adapter.request("history", {"target": target}, result)
 
     def render_messages(self, rows):
+        self.previews.stop()
+        self.attachment_cards.clear()
         bar = self.scroll.verticalScrollBar()
         stick = bar.maximum() - bar.value() < 30
         old = bar.value()
@@ -727,23 +742,39 @@ class Window(QMainWindow):
             if voice:
                 body.addWidget(self.voice_message_card(message["attachment"]), 0, Qt.AlignLeft)
             else:
-                text = label(message["body"], wrap=True)
-                text.setTextInteractionFlags(Qt.TextSelectableByMouse)
-                configure_emoji_text(text)
-                body.addWidget(text)
                 if message.get("attachment"):
-                    body.addWidget(
-                        button(
-                            "Save " + (name if len(name) <= 45 else name[:42] + "…") + "…",
-                            lambda checked=False, f=message["attachment"], n=name: self.save_attachment(f, n),
-                        )
-                    )
+                    card = AttachmentCard(self, message)
+                    if card.caption:
+                        caption = label(card.caption, wrap=True)
+                        caption.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                        configure_emoji_text(caption)
+                        body.addWidget(caption)
+                    body.addWidget(card, 0, Qt.AlignLeft)
+                    self.attachment_cards.append(card)
+                else:
+                    text = label(message["body"], wrap=True)
+                    text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                    configure_emoji_text(text)
+                    body.addWidget(text)
             layout.addLayout(body, 1)
             self.message_layout.addLayout(layout)
         self.message_layout.addStretch()
         QTimer.singleShot(
             0, self.scroll, lambda: bar.setValue(bar.maximum() if stick else old)
         )
+        QTimer.singleShot(0, self.scroll, self.load_visible_previews)
+
+    def load_visible_previews(self, _value=None):
+        if not self.target or not hasattr(self, 'scroll'):
+            return
+        viewport = self.scroll.viewport()
+        visible = viewport.rect().adjusted(0, -120, 0, 120)
+        for card in self.attachment_cards:
+            if card.kind == 'file' or card.requested:
+                continue
+            position = card.mapTo(viewport, QPoint(0, 0))
+            if QRect(position, card.size()).intersects(visible):
+                self.previews.request(card)
 
     def voice_message_card(self, file_id):
         card = QFrame()
@@ -807,101 +838,10 @@ class Window(QMainWindow):
         self.adapter.request("send_message", dict(target=target, body=text), result)
 
     def create_group(self):
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Create group")
-        layout = QVBoxLayout(dialog)
-        name = QLineEdit()
-        name.setPlaceholderText("Group name")
-        layout.addWidget(name)
-        protected = QCheckBox("Require a shared password")
-        layout.addWidget(protected)
-        password = QLineEdit()
-        password.setEchoMode(QLineEdit.Password)
-        password.setEnabled(False)
-        protected.toggled.connect(password.setEnabled)
-        layout.addWidget(password)
-        layout.addWidget(
-            label(
-                "Members can view saved group history. No admin roles.", "muted", True
-            )
-        )
-        error = label("", "error", True)
-        layout.addWidget(error)
-
-        def submit():
-            if protected.isChecked() and not password.text():
-                error.setText("Enter a shared password.")
-                return
-            self.request(
-                "create_group",
-                dict(
-                    name=name.text(),
-                    password=password.text() if protected.isChecked() else "",
-                ),
-                lambda data: (
-                    dialog.accept(),
-                    self.refresh(lambda: self.show_chat(data["target"])),
-                ),
-            )
-
-        layout.addWidget(button("Create", submit, "primary"))
-        layout.addWidget(button("Cancel", dialog.reject))
-        dialog.exec()
+        GroupForm(self).exec()
 
     def browse_groups(self):
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Browse groups")
-        dialog.resize(420, 360)
-        layout = QVBoxLayout(dialog)
-        layout.addWidget(
-            label("Joining grants access to saved group history.", "muted", True)
-        )
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        content = QWidget()
-        entries = QVBoxLayout(content)
-        scroll.setWidget(content)
-        layout.addWidget(scroll)
-        for group in self.state["groups"]:
-
-            def join(checked=False, g=group):
-                target = f"group:{g['id']}"
-                if g["joined"]:
-                    dialog.accept()
-                    self.show_chat(target)
-                    return
-                password = ""
-                if g["protected"]:
-                    password, ok = QInputDialog.getText(
-                        dialog,
-                        "Protected group",
-                        "Shared password:",
-                        QLineEdit.Password,
-                    )
-                    if not ok:
-                        return
-                self.request(
-                    "join_group",
-                    dict(target=target, password=password),
-                    lambda data: (
-                        dialog.accept(),
-                        self.refresh(lambda: self.show_chat(data["target"])),
-                    ),
-                )
-
-            entries.addWidget(
-                button(
-                    group["name"]
-                    + (" · Protected" if group["protected"] else " · Public")
-                    + (" · Joined" if group["joined"] else ""),
-                    join,
-                )
-            )
-        if not self.state["groups"]:
-            entries.addWidget(label("No groups yet. Create the first one.", "muted"))
-        entries.addStretch()
-        layout.addWidget(button("Close", dialog.reject))
-        dialog.exec()
+        BrowseGroups(self).exec()
 
     def leave_group(self):
         if (
@@ -1095,10 +1035,17 @@ class Window(QMainWindow):
                 self.recording_busy = False
                 QMessageBox.warning(self, "Microphone unavailable", error)
                 return
-            dialog = QDialog(self)
+            dialog = InAppDialog(self)
             self.record_dialog = dialog
             dialog.setWindowTitle("Record voice message")
             layout = QVBoxLayout(dialog)
+            header = QHBoxLayout()
+            title = label('Record voice message', 'title')
+            dialog.draggable(title)
+            header.addWidget(title)
+            header.addStretch()
+            header.addWidget(close_button(dialog))
+            layout.addLayout(header)
             timer_label = label("Recording… 0 / 60 seconds")
             layout.addWidget(timer_label)
             timer = QTimer(dialog)
@@ -1177,6 +1124,10 @@ class Window(QMainWindow):
         )
 
     def sign_out(self):
+        self.previews.stop()
+        prompt = getattr(self, 'incoming_prompt', None)
+        if prompt:
+            prompt.reject()
         if self.call_window:
             self.call_window.close()
         if self.record_dialog:
@@ -1192,6 +1143,7 @@ class Window(QMainWindow):
         self.login_screen()
 
     def closeEvent(self, event):
+        self.previews.close()
         if self.call_window:
             self.call_window.close()
         if self.record_dialog:
